@@ -1,6 +1,7 @@
 export const workspace = {
   en: {
     displayPreferences: "Display preferences",
+    githubRepository: "GitHub repository",
     projectActions: "Project and files",
     editActions: "Edit and create",
     theme: "Theme",
@@ -72,6 +73,7 @@ export const workspace = {
   },
   "zh-CN": {
     displayPreferences: "显示偏好",
+    githubRepository: "GitHub 仓库",
     projectActions: "项目与文件",
     editActions: "编辑与创建",
     theme: "主题",

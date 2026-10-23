@@ -352,6 +352,36 @@ test.each([
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
 });
 
+test.each([
+  { width: 390, language: "en", theme: "light" },
+  { width: 768, language: "zh-CN", theme: "dark" },
+  { width: 1000, language: "zh-CN", theme: "light" },
+  { width: 1440, language: "en", theme: "dark" },
+] as const)(
+  "keeps the GitHub repository link at the header right at $width in $language/$theme",
+  async ({ width, language, theme }) => {
+    await page.viewport(width, 900);
+    await act(async () => useWorkspaceUiStore.getState().updateDisplayPreferences({ theme, language }));
+    const link = page.getByRole("link", { name: language === "en" ? "GitHub repository" : "GitHub 仓库", exact: true });
+    await expect.element(link).toBeVisible();
+    await expect.element(link).toHaveAttribute("href", "https://github.com/xiaohe0601/open-3d");
+    await expect.element(link).toHaveAttribute("target", "_blank");
+    await expect.element(link).toHaveAttribute("rel", "noopener noreferrer");
+    const rect = link.element().getBoundingClientRect();
+    const preferences = document.querySelector(".display-preferences")!.getBoundingClientRect();
+    const identity = document.querySelector(".project-identity")!.getBoundingClientRect();
+    expect(rect.width).toBe(32);
+    expect(rect.height).toBe(32);
+    expect(rect.left).toBeGreaterThanOrEqual(preferences.right);
+    expect(rect.right).toBeLessThanOrEqual(width);
+    expect(rect.top).toBe(preferences.top);
+    expect(identity.right).toBeLessThanOrEqual(preferences.left);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    await act(async () => link.element().focus());
+    await expect.element(link).toHaveFocus();
+  },
+);
+
 test.each([1440, 1120, 1119, 1000, 999, 768, 390])("uses equal panel and tool padding at %ipx", async (width) => {
   await page.viewport(width, 900);
   const expectPadding = (selector: string, value: number) => {
