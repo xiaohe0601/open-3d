@@ -1,15 +1,35 @@
 import { useTranslation } from "react-i18next";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
-import { Bot, Check, LoaderCircle, Send, Settings2, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ImagePlus, LoaderCircle, Send, Settings2, X } from "lucide-react";
 import { streamOpenAICompatibleChat } from "@open-3d/ai";
-import { createAIModelingTools, type AIModelingToolResult } from "@open-3d/ai";
-import type { OpenAICompatibleChatMessage } from "@open-3d/ai";
+import { createAIModelingTools } from "@open-3d/ai";
+import type { AIConnectionRetry, OpenAICompatibleChatMessage } from "@open-3d/ai";
 import { loadAIProviderSettings } from "@open-3d/ai/settings";
 import type { AIProviderSettings } from "@open-3d/ai/settings";
 import { commandLabel } from "./localization";
 import type { CommandRequest, ModelingDocument } from "@open-3d/model-core";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "../components/ui/dropdown-menu";
+import {
+  CONVERSATION_IMAGE_TYPES,
+  MAX_CONVERSATION_IMAGES,
+  conversationHistory,
+  modelingContinuation,
+  readConversationImage,
+  validateConversationImages,
+  type ConversationImage,
+  type ConversationMessage,
+  type ConversationToolCall,
+} from "./ai-conversation-message";
+import { AIImageAttachments } from "./ai-image-attachments";
+import { AIToolCalls } from "./ai-tool-calls";
 
 interface AIConversationPanelProps {
   active: boolean;
@@ -20,21 +40,9 @@ interface AIConversationPanelProps {
   onAcceptProposal: (commands: readonly CommandRequest[]) => ModelingDocument;
 }
 
-interface CommandProposal {
-  commandId: string;
-  arguments: Record<string, unknown>;
-}
-
-interface ConversationMessage {
-  id: number;
-  role: "user" | "assistant";
-  text: string;
-  proposals?: CommandProposal[];
-  proposalStatus?: "pending" | "accepted" | "rejected";
-  proposalReady?: boolean;
-}
-
 type RequestStatus = "idle" | "connecting" | "streaming" | "complete" | "cancelled" | "error";
+type ApprovalMode = "request" | "auto";
+type ImageError = "imageCountError" | "imageTypeError" | "imageSizeError" | "imageReadError";
 
 export function AIConversationPanel({
   active,
@@ -49,12 +57,23 @@ export function AIConversationPanel({
   const [settingsError, setSettingsError] = useState<"storageError" | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [prompt, setPrompt] = useState("");
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>("request");
+  const [images, setImages] = useState<ConversationImage[]>([]);
+  const [readingImages, setReadingImages] = useState(false);
+  const [imageError, setImageError] = useState<ImageError | null>(null);
   const [status, setStatus] = useState<RequestStatus>("idle");
+  const [connectionRetry, setConnectionRetry] = useState<AIConnectionRetry | null>(null);
+  const [activeAssistantMessageId, setActiveAssistantMessageId] = useState<number | null>(null);
   const [requestError, setRequestError] = useState<AIRequestErrorKey | null>(null);
   const nextMessageId = useRef(1);
   const abortControllerRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const readingImagesRef = useRef(false);
   const isBusy = status === "connecting" || status === "streaming";
+  const hasInterruptedProposal = messages.some(
+    (message) => message.proposalInterrupted && message.proposalStatus === "pending",
+  );
 
   useEffect(() => {
     try {
@@ -79,7 +98,7 @@ export function AIConversationPanel({
   async function submitPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const text = prompt.trim();
-    if (!text || isBusy) return;
+    if ((!text && images.length === 0) || isBusy || readingImagesRef.current || hasInterruptedProposal) return;
 
     let savedProvider: AIProviderSettings | null;
     try {
@@ -101,18 +120,35 @@ export function AIConversationPanel({
       return;
     }
 
-    const userMessage: ConversationMessage = { id: nextMessageId.current++, role: "user", text };
+    const userMessage: ConversationMessage = { id: nextMessageId.current++, role: "user", text, images };
     const assistantMessage = createAssistantMessage();
-    const history = messages
-      .filter((message) => message.text.length > 0)
-      .map(({ role, text: content }) => ({ role, content }) as OpenAICompatibleChatMessage);
-    const requestMessages: OpenAICompatibleChatMessage[] = [...history, { role: "user", content: text }];
+    const requestMessages = conversationHistory([...messages, userMessage]);
 
     setPrompt("");
+    setImages([]);
+    setImageError(null);
     setRequestError(null);
     onPreviewDocument(null);
     setMessages((current) => [...current, userMessage, assistantMessage]);
-    await runAssistantTurn(savedProvider, requestMessages, document, assistantMessage, text);
+    await runAssistantTurn(savedProvider, requestMessages, document, assistantMessage, userMessage, approvalMode);
+  }
+
+  async function addImages(files: File[]) {
+    if (isBusy || readingImagesRef.current || files.length === 0) return;
+    const error = validateConversationImages(files, images.length);
+    setImageError(error);
+    if (error) return;
+    readingImagesRef.current = true;
+    setReadingImages(true);
+    try {
+      const attachments = await Promise.all(files.map(readConversationImage));
+      setImages((current) => [...current, ...attachments]);
+    } catch {
+      setImageError("imageReadError");
+    } finally {
+      readingImagesRef.current = false;
+      setReadingImages(false);
+    }
   }
 
   function createAssistantMessage(): ConversationMessage {
@@ -130,11 +166,29 @@ export function AIConversationPanel({
     requestMessages: OpenAICompatibleChatMessage[],
     baseDocument: ModelingDocument,
     assistantMessage: ConversationMessage,
-    retryPrompt: string,
+    retryMessage: ConversationMessage | undefined,
+    mode: ApprovalMode,
+    automaticBatches = 0,
   ) {
+    setActiveAssistantMessageId(assistantMessage.id);
     setStatus("connecting");
+    setConnectionRetry(null);
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
+    const proposals: CommandRequest[] = [];
+    let acceptingProposals = true;
+    let responseText = "";
+    const toolCalls = new Map<string, ConversationToolCall>();
+    let receivedToolOutput = false;
+
+    function updateToolCall(call: ConversationToolCall) {
+      toolCalls.set(call.id, { ...toolCalls.get(call.id), ...call });
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantMessage.id ? { ...message, toolCalls: [...toolCalls.values()] } : message,
+        ),
+      );
+    }
 
     try {
       const result = streamOpenAICompatibleChat({
@@ -145,19 +199,52 @@ export function AIConversationPanel({
         },
         messages: requestMessages,
         tools: createAIModelingTools(baseDocument, {
-          onCommandProposal: (_request, previewDocument) => {
-            if (!abortController.signal.aborted) onPreviewDocument(previewDocument);
+          onCommandProposal: (request, previewDocument) => {
+            if (!acceptingProposals || abortController.signal.aborted) return;
+            // Record validated commands with their preview, even if the stream fails before a tool-result arrives.
+            proposals.push(request);
+            onPreviewDocument(previewDocument);
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessage.id ? { ...message, proposals: [...proposals] } : message,
+              ),
+            );
           },
         }),
         abortSignal: abortController.signal,
+        retry: {
+          onRetry: (retry) => {
+            if (!abortController.signal.aborted) setConnectionRetry(retry);
+          },
+        },
       });
       let receivedText = false;
-      const proposals: CommandProposal[] = [];
       for await (const part of result.fullStream) {
         if (abortController.signal.aborted) break;
+        if (part.type === "tool-input-start") {
+          updateToolCall({ id: part.id, name: part.toolName, status: "preparing" });
+        }
+        if (part.type === "tool-call") {
+          updateToolCall({ id: part.toolCallId, name: part.toolName, status: "running", input: part.input });
+          setStatus("streaming");
+        }
+        if (part.type === "tool-result") {
+          receivedToolOutput = true;
+          updateToolCall({
+            id: part.toolCallId,
+            name: part.toolName,
+            status: "completed",
+            input: part.input,
+            output: part.output,
+          });
+        }
+        if (part.type === "tool-error") {
+          updateToolCall({ id: part.toolCallId, name: part.toolName, status: "failed", input: part.input });
+        }
         if (part.type === "error") throw part.error;
         if (part.type === "tool-error") throw part.error;
         if (part.type === "text-delta") {
+          responseText += part.text;
           if (!receivedText) {
             receivedText = true;
             setStatus("streaming");
@@ -168,48 +255,95 @@ export function AIConversationPanel({
             ),
           );
         }
-        if (part.type === "tool-result" && isCommandProposal(part.output)) {
-          proposals.push({ commandId: part.output.commandId, arguments: part.output.arguments });
-          setMessages((current) =>
-            current.map((message) =>
-              message.id === assistantMessage.id ? { ...message, proposals: [...proposals] } : message,
-            ),
-          );
-        }
       }
       if (abortController.signal.aborted) {
         throw abortController.signal.reason ?? new DOMException("Request cancelled.", "AbortError");
       }
+      acceptingProposals = false;
       setMessages((current) =>
         current.map((message) => (message.id === assistantMessage.id ? { ...message, proposalReady: true } : message)),
       );
       setStatus("complete");
-    } catch (cause) {
-      if (abortController.signal.aborted) {
+      if (mode === "auto" && proposals.length > 0) {
+        // Keep automatic work bounded; each completed batch remains one undoable edit.
+        if (automaticBatches >= 20) {
+          setRequestError("autoApprovalLimit");
+          return;
+        }
+        let updatedDocument: ModelingDocument;
+        try {
+          updatedDocument = onAcceptProposal(proposals);
+        } catch {
+          setRequestError("applyFailed");
+          return;
+        }
         onPreviewDocument(null);
+        const continuationMessage = createAssistantMessage();
         setMessages((current) =>
-          current.map((message) =>
+          current
+            .map((message) =>
+              message.id === assistantMessage.id ? { ...message, proposalStatus: "accepted" as const } : message,
+            )
+            .concat(continuationMessage),
+        );
+        await runAssistantTurn(
+          savedProvider,
+          [
+            ...requestMessages,
+            ...conversationHistory([{ ...assistantMessage, text: responseText }]),
+            modelingContinuation,
+          ],
+          updatedDocument,
+          continuationMessage,
+          undefined,
+          mode,
+          automaticBatches + 1,
+        );
+      }
+    } catch (cause) {
+      acceptingProposals = false;
+      for (const call of toolCalls.values()) {
+        if (call.status === "preparing" || call.status === "running") {
+          updateToolCall({ ...call, status: abortController.signal.aborted ? "cancelled" : "failed" });
+        }
+      }
+      const retainProposals = !abortController.signal.aborted && proposals.length > 0;
+      if (!retainProposals) onPreviewDocument(null);
+      setMessages((current) =>
+        current
+          .filter(
+            (message) =>
+              message.id !== assistantMessage.id ||
+              message.text.trim().length > 0 ||
+              retainProposals ||
+              toolCalls.size > 0,
+          )
+          .map((message) =>
             message.id === assistantMessage.id
-              ? { ...message, proposals: [], proposalStatus: "rejected", proposalReady: false }
+              ? {
+                  ...message,
+                  proposals: retainProposals ? [...proposals] : [],
+                  proposalStatus: retainProposals ? "pending" : "rejected",
+                  proposalReady: retainProposals,
+                  proposalInterrupted: retainProposals,
+                }
               : message,
           ),
-        );
+      );
+      if (abortController.signal.aborted) {
         setStatus("cancelled");
         setRequestError(null);
       } else {
-        onPreviewDocument(null);
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === assistantMessage.id
-              ? { ...message, proposals: [], proposalStatus: "rejected", proposalReady: false }
-              : message,
-          ),
-        );
-        setPrompt(retryPrompt);
+        if (retryMessage && !responseText.trim() && proposals.length === 0 && !receivedToolOutput) {
+          setPrompt(retryMessage.text);
+          setImages(retryMessage.images ?? []);
+        }
         setStatus("error");
         setRequestError(describeProviderError(cause));
       }
     } finally {
+      setConnectionRetry(null);
+      setActiveAssistantMessageId((current) => (current === assistantMessage.id ? null : current));
       if (abortControllerRef.current === abortController) abortControllerRef.current = null;
     }
   }
@@ -221,7 +355,25 @@ export function AIConversationPanel({
 
   function acceptProposal(message: ConversationMessage) {
     const proposals = message.proposals ?? [];
-    if (proposals.length === 0 || message.proposalStatus !== "pending") return;
+    if (isBusy || proposals.length === 0 || message.proposalStatus !== "pending") return;
+    if (message.proposalInterrupted) {
+      try {
+        onAcceptProposal(proposals);
+        onPreviewDocument(null);
+        setMessages((current) =>
+          current.map((item) => (item.id === message.id ? { ...item, proposalStatus: "accepted" } : item)),
+        );
+      } catch {
+        setRequestError("applyFailed");
+      }
+      // Keeping a failed request's partial work must not send another request automatically.
+      return;
+    }
+    const savedProvider = provider;
+    if (!savedProvider) {
+      setRequestError("configureContinue");
+      return;
+    }
     try {
       const updatedDocument = onAcceptProposal(
         proposals.map(({ commandId, arguments: argumentsValue }) => ({
@@ -231,34 +383,20 @@ export function AIConversationPanel({
       );
       onPreviewDocument(null);
       const continuationMessage = createAssistantMessage();
-      const history = messages
-        .filter((item) => item.text.length > 0)
-        .map(({ role, text }) => ({ role, content: text }) as OpenAICompatibleChatMessage);
-      const continuation: OpenAICompatibleChatMessage = {
-        role: "user",
-        content:
-          "Continue the original modeling task using the current scene. The user approved and applied the proposed changes above. " +
-          "Do not repeat completed work. If the original task is complete, briefly confirm completion. " +
-          "Otherwise, continue by proposing the next necessary modeling changes for review.",
-      };
+      const history = conversationHistory(messages);
       setMessages((current) =>
         current
           .map((item) => (item.id === message.id ? { ...item, proposalStatus: "accepted" as const } : item))
           .concat(continuationMessage),
       );
       setRequestError(null);
-      const savedProvider = provider;
-      if (!savedProvider) {
-        setStatus("error");
-        setRequestError("configureContinue");
-        return;
-      }
       void runAssistantTurn(
         savedProvider,
-        [...history, continuation],
+        [...history, modelingContinuation],
         updatedDocument,
         continuationMessage,
-        messages.find((item) => item.role === "user")?.text ?? "",
+        undefined,
+        approvalMode,
       );
     } catch {
       setRequestError("applyFailed");
@@ -266,6 +404,7 @@ export function AIConversationPanel({
   }
 
   function rejectProposal(messageId: number) {
+    if (isBusy) return;
     onPreviewDocument(null);
     setMessages((current) =>
       current.map((item) => (item.id === messageId ? { ...item, proposalStatus: "rejected" } : item)),
@@ -328,14 +467,16 @@ export function AIConversationPanel({
                 <span className="text-[13px] text-muted">
                   {message.role === "user" ? t("you") : t("assistantRole")}
                 </span>
+                {message.images?.length ? <AIImageAttachments images={message.images} /> : null}
                 <p className="mt-1 mb-0 break-words whitespace-pre-wrap text-[13px] leading-6 text-foreground">
                   {message.text ||
-                    (isBusy && message.role === "assistant" ? (
+                    (isBusy && message.id === activeAssistantMessageId ? (
                       <LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" />
                     ) : (
                       ""
                     ))}
                 </p>
+                {message.toolCalls?.length ? <AIToolCalls calls={message.toolCalls} /> : null}
                 {message.proposals && message.proposals.length > 0 && (
                   <section className="mt-2 grid gap-2 border-t border-border pt-2" aria-label={t("proposal")}>
                     <strong className="text-[13px] text-foreground">
@@ -349,31 +490,31 @@ export function AIConversationPanel({
                         </li>
                       ))}
                     </ol>
+                    {message.proposalInterrupted && message.proposalStatus === "pending" && (
+                      <p className="m-0 text-[13px] leading-[1.4] text-muted">{t("interruptedProposal")}</p>
+                    )}
                     {message.proposalStatus === "pending" && message.proposalReady && (
                       <div className="flex gap-1.5">
                         <Button
                           className="h-7 flex-1 rounded-md text-[13px]"
                           size="sm"
+                          disabled={isBusy}
                           onClick={() => acceptProposal(message)}
                         >
                           <Check />
-                          {t("accept")}
+                          {t(message.proposalInterrupted ? "keepChanges" : "accept")}
                         </Button>
                         <Button
                           className="h-7 rounded-md text-[13px]"
                           size="sm"
                           variant="outline"
+                          disabled={isBusy}
                           onClick={() => rejectProposal(message.id)}
                         >
                           <X />
-                          {t("reject")}
+                          {t(message.proposalInterrupted ? "discardChanges" : "reject")}
                         </Button>
                       </div>
-                    )}
-                    {message.proposalStatus === "accepted" && (
-                      <span className="text-[13px] text-positive" role="status">
-                        {t("applied")}
-                      </span>
                     )}
                     {message.proposalStatus === "rejected" && (
                       <span className="text-[13px] text-muted" role="status">
@@ -395,8 +536,10 @@ export function AIConversationPanel({
           <span
             className={`ai-status-indicator size-[7px] shrink-0 rounded-full ${status === "connecting" || status === "streaming" ? "bg-warning" : status === "complete" ? "bg-positive" : status === "error" ? "bg-destructive" : "bg-muted"}`}
           />
-          {status === "connecting" && t("connecting")}
-          {status === "streaming" && t("streaming")}
+          {connectionRetry &&
+            t("reconnecting", { attempt: connectionRetry.attempt, maxRetries: connectionRetry.maxRetries })}
+          {!connectionRetry && status === "connecting" && t("connecting")}
+          {!connectionRetry && status === "streaming" && t("streaming")}
           {status === "complete" && t("complete")}
           {status === "cancelled" && t("cancelled")}
           {status === "error" && t("error")}
@@ -417,57 +560,112 @@ export function AIConversationPanel({
         {requestError && (
           <div className="grid shrink-0 gap-1.5 break-words text-[13px] leading-[1.4] text-destructive" role="alert">
             <span>{t(requestError)}</span>
-            <span className="text-muted">{t("retry")}</span>
+            {status === "error" && !hasInterruptedProposal && <span className="text-muted">{t("retry")}</span>}
           </div>
         )}
       </div>
 
       <form
-        className="ai-prompt-form flex shrink-0 items-center gap-1.5 border-t border-border px-1 pt-[9px] pb-1"
+        className="ai-prompt-form flex shrink-0 flex-col gap-1.5 border-t border-border px-1 pt-[9px] pb-1"
         onSubmit={submitPrompt}
       >
-        <label className="sr-only" htmlFor="ai-prompt">
-          {t("message")}
-        </label>
-        <Input
-          id="ai-prompt"
-          className="h-11 rounded-[5px] text-[13px]"
-          value={prompt}
-          onChange={(event) => setPrompt(event.currentTarget.value)}
-          placeholder={t("placeholder")}
-          autoComplete="off"
-          disabled={isBusy}
-        />
-        <Button
-          className="size-11 rounded-[5px]"
-          type="submit"
-          size="icon"
-          aria-label={t("send")}
-          title={t("send")}
-          disabled={!prompt.trim() || isBusy}
-        >
-          <Send />
-        </Button>
+        <div className="flex w-full items-center justify-between gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button type="button" variant="ghost" size="sm" className="text-[13px]" />}
+              aria-label={t("approvalMode")}
+              disabled={isBusy}
+            >
+              {t(approvalMode === "request" ? "requestApproval" : "autoApproval")}
+              <ChevronDown className="size-3.5" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" aria-label={t("approvalMode")}>
+              <DropdownMenuRadioGroup
+                value={approvalMode}
+                onValueChange={(value) => {
+                  if (value === "request" || value === "auto") setApprovalMode(value);
+                }}
+              >
+                <DropdownMenuRadioItem value="request">{t("requestApproval")}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="auto">{t("autoApproval")}</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={t("addImages")}
+            title={t("imageRequirements")}
+            disabled={isBusy || readingImages || images.length >= MAX_CONVERSATION_IMAGES}
+            onClick={() => imageInputRef.current?.click()}
+          >
+            {readingImages ? <LoaderCircle className="animate-spin" /> : <ImagePlus />}
+          </Button>
+          <input
+            ref={imageInputRef}
+            type="file"
+            data-testid="ai-image-input"
+            accept={CONVERSATION_IMAGE_TYPES.join(",")}
+            multiple
+            hidden
+            aria-label={t("addImages")}
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
+              event.currentTarget.value = "";
+              void addImages(files);
+            }}
+          />
+        </div>
+        {images.length > 0 && (
+          <AIImageAttachments
+            images={images}
+            onRemove={
+              isBusy || readingImages
+                ? undefined
+                : (id) => {
+                    setImages((current) => current.filter((image) => image.id !== id));
+                    setImageError(null);
+                  }
+            }
+          />
+        )}
+        {imageError && (
+          <p className="m-0 text-[13px] text-destructive" role="alert">
+            {t(imageError)}
+          </p>
+        )}
+        <div className="flex w-full items-center gap-1.5">
+          <label className="sr-only" htmlFor="ai-prompt">
+            {t("message")}
+          </label>
+          <Input
+            id="ai-prompt"
+            className="h-11 rounded-[5px] text-[13px]"
+            value={prompt}
+            onChange={(event) => setPrompt(event.currentTarget.value)}
+            placeholder={t("placeholder")}
+            autoComplete="off"
+            disabled={isBusy}
+          />
+          <Button
+            className="size-11 rounded-[5px]"
+            type="submit"
+            size="icon"
+            aria-label={t("send")}
+            title={t("send")}
+            disabled={(!prompt.trim() && images.length === 0) || isBusy || readingImages || hasInterruptedProposal}
+          >
+            <Send />
+          </Button>
+        </div>
       </form>
     </section>
   );
 }
 
-function isCommandProposal(value: unknown): value is Extract<AIModelingToolResult, { kind: "command-proposal" }> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "kind" in value &&
-    value.kind === "command-proposal" &&
-    "commandId" in value &&
-    typeof value.commandId === "string" &&
-    "arguments" in value &&
-    typeof value.arguments === "object" &&
-    value.arguments !== null
-  );
-}
-
 type AIRequestErrorKey =
+  | "autoApprovalLimit"
   | "reviewSettings"
   | "configureFirst"
   | "configureContinue"

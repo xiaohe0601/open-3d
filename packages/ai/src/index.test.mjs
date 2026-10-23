@@ -295,6 +295,35 @@ test("continues through multiple tool rounds against the evolving preview docume
   assert.match(hierarchyResult.content, /Table top/);
 });
 
+test("reconnects a failed tool follow-up without executing the completed command again", async () => {
+  const requests = [];
+  const previews = [];
+  const result = streamOpenAICompatibleChat({
+    config: {
+      baseURL: "https://models.example.test/v1",
+      modelId: "test-model",
+      fetch: async (_input, init) => {
+        requests.push(init.body);
+        if (requests.length === 1)
+          return toolCallResponse("box", "command_scene_createPrimitive", { primitive: "box" });
+        if (requests.length === 2) throw new TypeError("Failed to fetch");
+        return streamingResponse([
+          'data: {"id":"done","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"Ready"},"finish_reason":null}]}\n\n',
+          'data: {"id":"done","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+          "data: [DONE]\n\n",
+        ]);
+      },
+    },
+    messages: [{ role: "user", content: "Make a box" }],
+    tools: createAIModelingTools(emptyDocument(), { onCommandProposal: (request) => previews.push(request) }),
+    retry: { initialDelayMs: 0 },
+  });
+  assert.equal(await result.text, "Ready");
+  assert.equal(requests.length, 3);
+  assert.equal(requests[1], requests[2]);
+  assert.equal(previews.length, 1);
+});
+
 test("passes cancellation through to the browser fetch request", async () => {
   const controller = new AbortController();
   let requestSignal;

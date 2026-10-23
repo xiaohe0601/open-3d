@@ -1,6 +1,8 @@
 import { stepCountIs, streamText, type ModelMessage, type ToolSet } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { AIProviderSettings } from "./settings.ts";
+import { createRetryingAIFetch, type AIConnectionRetryOptions } from "./request-retry.ts";
+export type { AIConnectionRetry } from "./request-retry.ts";
 export * from "./settings.ts";
 
 export type OpenAICompatibleChatMessage = ModelMessage;
@@ -16,6 +18,7 @@ export interface StreamOpenAICompatibleChatOptions<Tools extends ToolSet = ToolS
   messages: ModelMessage[];
   tools?: Tools;
   abortSignal?: AbortSignal;
+  retry?: AIConnectionRetryOptions;
 }
 
 export class OpenAICompatibleConfigError extends Error {
@@ -61,13 +64,20 @@ export function streamOpenAICompatibleChat<Tools extends ToolSet = ToolSet>({
   messages,
   tools,
   abortSignal,
+  retry,
 }: StreamOpenAICompatibleChatOptions<Tools>) {
   return streamText({
-    model: createOpenAICompatibleChatModel(config),
+    model: createOpenAICompatibleChatModel({
+      ...config,
+      fetch: createRetryingAIFetch(config.fetch ?? globalThis.fetch, retry),
+    }),
     messages,
     tools,
     abortSignal,
     maxRetries: 0,
-    stopWhen: stepCountIs(20),
+    stopWhen: [
+      stepCountIs(20),
+      ({ steps }) => steps.at(-1)?.content.some((part) => part.type === "tool-error") ?? false,
+    ],
   });
 }

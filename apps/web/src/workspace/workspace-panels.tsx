@@ -157,7 +157,7 @@ export function SceneHierarchyPanel({
   const { t } = useTranslation("workspace");
   return (
     <aside
-      className="left-panel flex min-h-0 flex-col bg-ground p-[10px] max-[1120px]:p-1.5"
+      className="left-panel flex min-h-0 min-w-0 flex-col bg-ground p-[10px] max-[1120px]:p-1.5"
       id="scene-panel"
       data-testid="left-panel"
       aria-labelledby="objects-heading"
@@ -171,20 +171,21 @@ export function SceneHierarchyPanel({
         </div>
         <AddObjectMenu onAddPrimitive={onAddPrimitive} />
       </div>
-      <div className="object-list grid gap-0.5">
+      <div className="object-list grid min-h-0 min-w-0 w-full grid-cols-1 content-start gap-0.5">
         {items.map((item) => (
           <div
-            className={`object-row flex h-[33px] w-full items-center gap-1 rounded-[5px] py-0 pr-[5px] pl-2 ${selectedObjectIds.includes(item.id) ? "selected bg-selection text-foreground" : "hover:bg-soft"}`}
+            className={`object-row flex h-[33px] min-w-0 w-full items-center gap-1 rounded-[5px] py-0 pr-[5px] pl-2 ${selectedObjectIds.includes(item.id) ? "selected bg-selection text-foreground" : "hover:bg-soft"}`}
             key={item.id}
             data-testid="object-row"
           >
             <Button
               variant="ghost"
-              className="flex h-full min-w-0 flex-1 items-center gap-2 border-0 bg-transparent pr-0 pl-[3px] text-left text-[13px] hover:bg-transparent active:bg-transparent"
+              className="flex h-full min-w-0 flex-1 shrink items-center gap-2 border-0 bg-transparent pr-0 pl-[3px] text-left text-[13px] hover:bg-transparent active:bg-transparent"
               onClick={(event) => onSelectObject(item.id, item.name, event.shiftKey)}
               aria-current={item.id === activeObjectId ? "true" : undefined}
+              title={item.name}
             >
-              <span className="object-glyph w-[15px] text-center text-sm text-muted">
+              <span className="object-glyph w-[15px] shrink-0 text-center text-sm text-muted">
                 <ObjectIcon mesh={item.mesh} className="size-3.5" />
               </span>
               <span className="object-label min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
