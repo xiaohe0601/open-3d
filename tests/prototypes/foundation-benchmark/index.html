@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Foundation Benchmark Harness</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font:
+          13px/1.45 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        background: #101719;
+        color: #e4ece8;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 52px;
+        padding: 8px 16px;
+        border-bottom: 1px solid #34413c;
+        background: #182220;
+      }
+      h1 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      #state {
+        color: #a5b8af;
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        min-height: calc(100vh - 52px);
+      }
+      #viewport {
+        position: relative;
+        min-height: 560px;
+        background: #121a1a;
+      }
+      #viewport canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+      aside {
+        padding: 14px;
+        border-left: 1px solid #34413c;
+        background: #182220;
+      }
+      section {
+        padding: 0 0 14px;
+        margin: 0 0 14px;
+        border-bottom: 1px solid #34413c;
+      }
+      h2 {
+        margin: 0 0 8px;
+        color: #9ec1ae;
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 7px 0;
+      }
+      button {
+        min-height: 30px;
+        padding: 5px 8px;
+        color: #edf5f0;
+        background: #293832;
+        border: 1px solid #496155;
+        border-radius: 3px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #354a40;
+      }
+      pre {
+        max-height: 260px;
+        overflow: auto;
+        margin: 0;
+        color: #c6d5cd;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .note {
+        color: #9aaba3;
+        font-size: 11px;
+      }
+      @media (max-width: 760px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+        #viewport {
+          min-height: 52vh;
+        }
+        aside {
+          border-left: 0;
+          border-top: 1px solid #34413c;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Foundation Benchmark Harness / Three.js 0.186.1</h1>
+      <span id="state">Initializing</span>
+    </header>
+    <main>
+      <div id="viewport" aria-label="Three.js benchmark viewport"></div>
+      <aside>
+        <section>
+          <h2>Fixture</h2>
+          <div class="row">
+            <button data-scene="primitive">100 primitives</button>
+            <button data-scene="editable">16 x 16 quad</button>
+            <button data-scene="dense">128 x 128 quad</button>
+          </div>
+          <div class="note">Drag to orbit. Pointer feedback measures event-to-render delay.</div>
+        </section>
+        <section>
+          <h2>Measurements</h2>
+          <pre id="metrics">Waiting for first render...</pre>
+        </section>
+        <section>
+          <h2>Runs</h2>
+          <div class="row">
+            <button id="command">Measure common command</button>
+            <button id="roundtrip">Measure glTF round trip</button>
+          </div>
+          <div class="row">
+            <button id="frame-run">Start 60s viewport run</button>
+            <button id="frame-stop" disabled>Stop viewport run</button>
+          </div>
+          <div class="row">
+            <button id="download">Export JSON report</button>
+          </div>
+          <div class="note">Run after warm-up. Results are local and stay in this tab.</div>
+        </section>
+        <section>
+          <h2>Run Log</h2>
+          <pre id="log">No benchmark run yet.</pre>
+        </section>
+      </aside>
+    </main>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module">
+      import("./main.js").catch((error) => {
+        document.querySelector("#state").textContent = `Module error: ${error.message}`;
+        document.querySelector("#metrics").textContent = error.stack ?? String(error);
+      });
+    </script>
+  </body>
+</html>

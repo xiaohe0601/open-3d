@@ -1,0 +1,35 @@
+{
+  "asset": { "version": "2.0", "generator": "Open 3D golden fixture" },
+  "scene": 0,
+  "scenes": [{ "name": "Golden scene", "nodes": [0] }],
+  "nodes": [
+    { "name": "Root", "translation": [1, 2, 3], "children": [1] },
+    { "name": "Triangle", "translation": [0, 0, 2], "mesh": 0 },
+    { "name": "Perspective camera", "camera": 0 }
+  ],
+  "meshes": [
+    {
+      "name": "Triangle mesh",
+      "primitives": [{ "attributes": { "POSITION": 0 }, "material": 0 }]
+    }
+  ],
+  "cameras": [{ "type": "perspective", "perspective": { "yfov": 0.7, "znear": 0.1 } }],
+  "materials": [
+    {
+      "name": "Red metal",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.8, 0.1, 0.2, 1],
+        "metallicFactor": 0.65,
+        "roughnessFactor": 0.25
+      }
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 36,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"
+    }
+  ],
+  "bufferViews": [{ "buffer": 0, "byteOffset": 0, "byteLength": 36 }],
+  "accessors": [{ "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" }]
+}

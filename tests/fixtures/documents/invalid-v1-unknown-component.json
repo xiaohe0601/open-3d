@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "document-1",
+  "name": "Invalid Fixture",
+  "activeSceneId": "scene-1",
+  "scenes": [{ "id": "scene-1", "name": "Scene", "objectIds": ["object-1"] }],
+  "objects": [
+    {
+      "id": "object-1",
+      "name": "Quad",
+      "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "mesh": {
+        "id": "mesh-1",
+        "vertices": [
+          { "id": "vertex-1", "position": [0, 0, 0] },
+          { "id": "vertex-2", "position": [1, 0, 0] },
+          { "id": "vertex-3", "position": [1, 1, 0] }
+        ],
+        "edges": [{ "id": "edge-1", "vertexIds": ["vertex-1", "vertex-2"] }],
+        "faces": [{ "id": "face-1", "vertexIds": ["vertex-1", "vertex-2", "vertex-3"], "materialId": null }]
+      },
+      "visible": true,
+      "parentId": null
+    }
+  ],
+  "materials": [],
+  "selection": {
+    "mode": "vertex",
+    "objectIds": ["object-1"],
+    "componentIds": ["vertex-missing"],
+    "activeObjectId": "object-1"
+  },
+  "workspace": {
+    "projection": "orthographic",
+    "cameraPosition": [0, 0, 5],
+    "cameraTarget": [0, 0, 0],
+    "cameraRotation": [0, 0, 0, 1],
+    "fieldOfView": 50,
+    "orthographicScale": 10,
+    "showGrid": true,
+    "showAxes": true
+  }
+}

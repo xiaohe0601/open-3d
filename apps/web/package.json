@@ -1,0 +1,36 @@
+{
+  "name": "@open-3d/web",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@base-ui/react": "^1.9.0",
+    "@floating-ui/react-dom": "^2.1.9",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@open-3d/ai": "workspace:*",
+    "@open-3d/model-core": "workspace:*",
+    "@open-3d/projects": "workspace:*",
+    "@open-3d/viewport-three": "workspace:*",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "i18next": "^26.5.3",
+    "lucide-react": "^1.59.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-i18next": "^17.1.0",
+    "tailwind-merge": "^3.7.0",
+    "tw-animate-css": "^1.4.0",
+    "zod": "^4.6.7",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "shadcn": "^4.22.1",
+    "tailwindcss": "^4.3.3"
+  }
+}

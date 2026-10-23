@@ -1,0 +1,25 @@
+{
+  "name": "open-3d",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev": "vp run workspace-dev",
+    "build": "vp run workspace-build",
+    "test": "vp run workspace-test",
+    "test:coverage": "vp run workspace-test-coverage",
+    "lint": "vp lint",
+    "format-check": "vp run workspace-format-check",
+    "typecheck": "vp run workspace-typecheck",
+    "ci": "vp run workspace-ci"
+  },
+  "devDependencies": {
+    "@vitest/browser-playwright": "5.0.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "playwright": "^1.64.1",
+    "vite-plus": "catalog:"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "packageManager": "pnpm@11.28.6"
+}

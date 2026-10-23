@@ -1,0 +1,17 @@
+{
+  "name": "@open-3d/ai",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./settings": "./src/settings.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "^3.0.71",
+    "@open-3d/model-core": "workspace:*",
+    "ai": "^7.0.143",
+    "zod": "^4.6.7"
+  }
+}

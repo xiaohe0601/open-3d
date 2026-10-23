@@ -1,0 +1,15 @@
+{
+  "name": "@open-3d/projects",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gltf": "./src/gltf.ts"
+  },
+  "dependencies": {
+    "@gltf-transform/core": "^4.5.1",
+    "@open-3d/model-core": "workspace:*"
+  }
+}

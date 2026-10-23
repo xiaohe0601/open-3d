@@ -1,0 +1,336 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource/ibm-plex-sans/latin-400.css";
+@import "@fontsource/ibm-plex-sans/latin-500.css";
+@import "@fontsource/ibm-plex-sans/latin-600.css";
+@import "@fontsource/ibm-plex-mono/latin-400.css";
+@import "./theme.css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+}
+
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+  --color-raised: var(--raised);
+  --color-soft: var(--soft);
+  --color-selection: var(--selection);
+  --color-faint: var(--faint);
+  --color-positive: var(--positive);
+  --color-positive-soft: var(--positive-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-border: var(--warning-border);
+  --color-negative-soft: var(--negative-soft);
+  --color-negative-border: var(--negative-border);
+  --color-primary-hover: var(--primary-hover);
+  --color-viewport: var(--viewport);
+  --color-scrim: var(--scrim);
+  --color-accent-soft: var(--accent-soft);
+  --color-thumbnail: var(--thumbnail);
+  --color-thumbnail-line: var(--thumbnail-line);
+  --color-ground: var(--ground);
+  --color-sheet: var(--sheet);
+  --color-rule: var(--rule);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-blue: var(--blue);
+  --color-green: var(--green);
+  --color-amber: var(--amber);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply box-border border-border outline-ring/50;
+  }
+
+  html,
+  body,
+  #app {
+    @apply m-0 h-full w-full;
+  }
+
+  body {
+    @apply min-w-[820px] overflow-hidden bg-background text-foreground;
+  }
+
+  button,
+  input {
+    @apply font-sans text-inherit;
+  }
+
+  button {
+    @apply cursor-pointer;
+  }
+
+  button:disabled {
+    @apply cursor-default text-muted;
+  }
+}
+
+@media (max-width: 860px) {
+  body {
+    min-width: 0;
+    overflow: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Renderer integration requires canvas sizing and pointer-capture feedback on the native canvas. */
+.viewport-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: default;
+  touch-action: none;
+}
+
+.viewport-canvas canvas.is-navigating {
+  cursor: grabbing;
+}
+
+/* The viewport axis widget and view cube are small geometric overlays, not document content. */
+.axis {
+  position: absolute;
+  z-index: 1;
+  height: 1px;
+}
+
+.axis span {
+  position: absolute;
+  top: -8px;
+  right: -12px;
+  font:
+    11px "IBM Plex Sans",
+    sans-serif;
+}
+
+.axis-x {
+  top: 50%;
+  left: 50%;
+  width: 112px;
+  transform: rotate(-31deg);
+  transform-origin: left;
+  background: var(--destructive);
+}
+
+.axis-x span {
+  color: var(--destructive);
+}
+
+.axis-y {
+  top: 50%;
+  left: 50%;
+  width: 96px;
+  transform: rotate(32deg);
+  transform-origin: left;
+  background: var(--positive);
+}
+
+.axis-y span {
+  color: var(--positive);
+}
+
+.view-cube {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  width: 51px;
+  height: 51px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--sheet);
+  color: var(--muted);
+  font:
+    11px "IBM Plex Sans",
+    sans-serif;
+}
+
+.view-cube i,
+.view-cube b {
+  position: absolute;
+  width: 12px;
+  height: 1px;
+  transform: rotate(-34deg);
+  background: var(--destructive);
+}
+
+.view-cube i {
+  margin: 17px 0 0 16px;
+}
+
+.view-cube b {
+  margin: 17px 16px 0 0;
+  transform: rotate(34deg);
+  background: var(--positive);
+}
+
+input[type="number"] {
+  appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+@layer components {
+  .ai-conversation {
+    @apply min-w-0;
+  }
+
+  .properties-content,
+  .object-list {
+    @apply overscroll-contain;
+  }
+
+  .object-list {
+    @apply overflow-auto;
+  }
+}
+
+@media (width < 1000px) {
+  body {
+    @apply min-w-0 overflow-hidden;
+  }
+
+  .panel-navigation {
+    @apply grid;
+  }
+
+  .left-panel,
+  .right-panel {
+    @apply hidden overflow-auto p-0;
+  }
+
+  .studio[data-panel="scene"] .left-panel,
+  .studio[data-panel="properties"] .right-panel {
+    @apply flex;
+  }
+
+  .studio[data-panel="scene"] .center-stage,
+  .studio[data-panel="properties"] .center-stage {
+    @apply hidden;
+  }
+
+  .viewport-toolbar {
+    @apply h-auto min-h-10 py-1;
+  }
+
+  .context-bar {
+    @apply shrink-0 flex-wrap gap-1 px-3 py-1;
+  }
+
+  .toolbar-separator,
+  .context-hint {
+    @apply hidden;
+  }
+
+  .viewport-tools [data-slot="button"] {
+    @apply h-8 min-h-8;
+  }
+
+  .quick-tool {
+    @apply h-6 min-h-6 text-xs;
+  }
+
+  .object-row {
+    @apply h-9 pl-2;
+  }
+
+  .object-row > [data-slot="button"]:not(:first-child) {
+    @apply size-8;
+  }
+
+  .viewport-nav > [data-slot="button"] {
+    @apply size-8;
+  }
+
+  .value-field {
+    @apply h-8;
+  }
+
+  .viewport {
+    @apply min-h-0;
+  }
+}
+
+@media (width < 600px) {
+  .topbar {
+    @apply gap-1;
+  }
+
+  .topbar [data-slot="button"] {
+    @apply px-2;
+  }
+
+  .context-copy {
+    @apply basis-full;
+  }
+
+  .context-bar {
+    @apply gap-y-1;
+  }
+
+  .context-bar .transform-tools {
+    @apply ml-auto pl-1;
+  }
+
+  .quick-tool {
+    @apply px-1.5;
+  }
+}

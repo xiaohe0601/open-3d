@@ -1,0 +1,23 @@
+ignoreWorkspaceRootCheck: true
+minimumReleaseAge: 0
+minimumReleaseAgeExcludePrune: true
+
+peerDependencyRules:
+  allowAny:
+    - vite
+  allowedVersions:
+    vite: "*"
+
+shamefullyHoist: true
+shellEmulator: true
+
+packages:
+  - apps/*
+  - packages/*
+
+overrides:
+  vite@*: "catalog:"
+
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@1.3.0
+  vite-plus: 1.3.0

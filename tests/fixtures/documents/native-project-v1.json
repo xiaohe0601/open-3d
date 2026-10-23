@@ -1,0 +1,63 @@
+{
+  "format": "open-3d-project",
+  "formatVersion": 1,
+  "document": {
+    "schemaVersion": 1,
+    "id": "native-project-document",
+    "name": "Native Project Fixture",
+    "activeSceneId": "scene-1",
+    "scenes": [{ "id": "scene-1", "name": "Scene", "objectIds": ["object-1"] }],
+    "objects": [
+      {
+        "id": "object-1",
+        "name": "Quad",
+        "transform": {
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1]
+        },
+        "mesh": {
+          "id": "mesh-1",
+          "vertices": [
+            { "id": "vertex-1", "position": [0, 0, 0] },
+            { "id": "vertex-2", "position": [1, 0, 0] },
+            { "id": "vertex-3", "position": [1, 1, 0] },
+            { "id": "vertex-4", "position": [0, 1, 0] }
+          ],
+          "edges": [
+            { "id": "edge-1", "vertexIds": ["vertex-1", "vertex-2"] },
+            { "id": "edge-2", "vertexIds": ["vertex-2", "vertex-3"] },
+            { "id": "edge-3", "vertexIds": ["vertex-3", "vertex-4"] },
+            { "id": "edge-4", "vertexIds": ["vertex-4", "vertex-1"] }
+          ],
+          "faces": [
+            {
+              "id": "face-1",
+              "vertexIds": ["vertex-1", "vertex-2", "vertex-3", "vertex-4"],
+              "materialId": null
+            }
+          ]
+        },
+        "visible": true,
+        "parentId": null
+      }
+    ],
+    "materials": [],
+    "selection": {
+      "mode": "object",
+      "objectIds": ["object-1"],
+      "componentIds": [],
+      "activeObjectId": "object-1"
+    },
+    "workspace": {
+      "projection": "perspective",
+      "cameraPosition": [4, 4, 4],
+      "cameraTarget": [0, 0, 0],
+      "cameraRotation": [0, 0, 0, 1],
+      "fieldOfView": 50,
+      "orthographicScale": 10,
+      "showGrid": true,
+      "showAxes": true
+    }
+  }
+}
