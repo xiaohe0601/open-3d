@@ -1480,6 +1480,12 @@ test.each(["en", "zh-CN"] as const)(
     await addPrimitive("cylinder");
     await click(page.getByRole("button", { name: zh ? "打开项目" : "Open projects", exact: true }));
     const dialog = page.getByRole("dialog", { name: zh ? "项目" : "Projects", exact: true });
+    // The dialog opens before its IndexedDB-backed project list has finished loading.
+    await expect
+      .poll(() =>
+        dialog.element().querySelector<HTMLElement>('[data-project-id][aria-current="true"]')?.checkVisibility(),
+      )
+      .toBe(true);
     const current = dialog.element().querySelector<HTMLElement>('[data-project-id][aria-current="true"]')!;
     expect(current).not.toBeNull();
     expect(getComputedStyle(current).backgroundColor).toBe(semanticColor("selection"));
