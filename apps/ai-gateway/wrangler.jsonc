@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "open-3d-ai-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-23",
+  "compatibility_flags": ["enable_request_signal"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "vars": {
+    "MODE": "self-hosted",
+    "RELAY_ENABLED": "false",
+    "ALLOWED_ORIGINS": "[]",
+    "SELF_HOSTED_AUTH": "token",
+    "MAX_REQUEST_BYTES": "50331648",
+    "UPLOAD_IDLE_TIMEOUT_MS": "60000",
+    "RESPONSE_START_TIMEOUT_MS": "180000",
+    "IDLE_TIMEOUT_MS": "120000",
+    "TOTAL_TIMEOUT_MS": "600000",
+    "MAX_CONCURRENT": "2",
+    "MAX_DEPLOYMENT_CONCURRENT": "32",
+    "MAX_DAILY_REQUESTS": "10000",
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY_ADMISSION", "class_name": "RelayAdmission" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayAdmission"] }],
+  "ratelimits": [
+    { "name": "GRANT_RATE", "namespace_id": "1001", "simple": { "limit": 5, "period": 60 } },
+    { "name": "RELAY_RATE", "namespace_id": "1002", "simple": { "limit": 20, "period": 60 } },
+  ],
+}

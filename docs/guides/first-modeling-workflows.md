@@ -2,13 +2,16 @@
 
 These workflows use the browser workspace only. No account, AI provider, or API key is needed.
 
+Project links use `/projects/:id`. Unsaved workspaces have temporary IDs; see
+[Project URLs](./project-urls.md) for refresh behavior, first-save adoption and local-storage limits.
+
 ## Build a Simple Scene
 
 1. Open **Add object** using the plus button beside **Objects**. On narrow screens, first open the **Objects** panel. The menu opens beneath the button without covering the workspace with a modal.
 2. Choose **Box**, **Sphere**, or **Cylinder** to add a primitive to the current scene. Existing objects are kept; preset scenes are no longer offered.
 3. Select an object in the **Objects** hierarchy. Its name and numeric transform fields appear in **Properties**. Shape icons distinguish primitive topology; edited meshes can use the generic mesh icon.
 4. Rename it in the object name field and press Enter. Change Position, Rotation, or Scale values to place it precisely; leaving a field commits the value.
-5. Add more primitives and repeat the transform step to compose the scene. Use the hierarchy eye button to hide or show an object, Copy to duplicate it, and Delete to remove it.
+5. Add more primitives and repeat the transform step to compose the scene. Open the ellipsis menu on an object row to hide or show it, duplicate it, or delete it.
 6. Use **Undo** in the top bar to reverse a committed action.
 
 ## Select Mesh Components

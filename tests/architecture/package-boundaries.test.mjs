@@ -3,15 +3,15 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "vite-plus/test";
 import { fileURLToPath } from "node:url";
+import {
+  allowedWorkspaceEdges,
+  forbiddenCoreImports,
+  moduleSpecifiers,
+  neutralRuntimeViolations,
+  workspaceImportViolation,
+} from "./workspace-policy.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const forbiddenExternalImports = [
-  /^(?:react|react-dom|preact|vue|svelte|solid-js|antd)(?:\/|$)/,
-  /^@(?:radix-ui|headlessui|mui|chakra-ui|emotion|react-three)\//,
-  /^(?:three|three-mesh-bvh)(?:\/|$)/,
-  /^(?:ai|@ai-sdk\/)/,
-  /^(?:dexie|idb|localforage)(?:\/|$)/,
-];
 const sourceExtensions = new Set([".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"]);
 
 async function readManifest(workspacePath) {
@@ -20,25 +20,19 @@ async function readManifest(workspacePath) {
 }
 
 async function readWorkspaceManifests() {
-  const packageDirectories = await readdir(path.join(repoRoot, "packages"), { withFileTypes: true });
-  const workspacePaths = [
-    "apps/web",
-    ...packageDirectories
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.posix.join("packages", entry.name)),
-  ];
+  const workspacePaths = (
+    await Promise.all(
+      ["apps", "packages"].map(async (group) =>
+        (await readdir(path.join(repoRoot, group), { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => path.posix.join(group, entry.name)),
+      ),
+    )
+  ).flat();
   const manifests = Object.fromEntries(
     await Promise.all(workspacePaths.map(async (workspacePath) => [workspacePath, await readManifest(workspacePath)])),
   );
-  const corePath = Object.entries(manifests).find(
-    ([workspacePath, manifest]) =>
-      workspacePath.startsWith("packages/") &&
-      !Object.keys({
-        ...manifest.dependencies,
-        ...manifest.devDependencies,
-        ...manifest.peerDependencies,
-      }).some((dependency) => dependency.startsWith("@open-3d/")),
-  )?.[0];
+  const corePath = workspacePaths.find((workspacePath) => workspacePath === "packages/model-core");
 
   assert.ok(corePath, "a product core workspace with no product workspace dependencies must exist");
   return { corePath, manifests, workspacePaths };
@@ -49,21 +43,13 @@ async function listSourceFiles(directory) {
   const nested = await Promise.all(
     entries.map(async (entry) => {
       const entryPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) return listSourceFiles(entryPath);
+      if (entry.isDirectory()) {
+        return ["node_modules", "dist", ".wrangler"].includes(entry.name) ? [] : listSourceFiles(entryPath);
+      }
       return sourceExtensions.has(path.extname(entry.name)) ? [entryPath] : [];
     }),
   );
   return nested.flat();
-}
-
-function moduleSpecifiers(source) {
-  const patterns = [
-    /\b(?:import|export)\s+(?:type\s+)?[^"'`;]*?\bfrom\s*["']([^"']+)["']/gs,
-    /\bimport\s*["']([^"']+)["']/g,
-    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
-  ];
-  return patterns.flatMap((pattern) => [...source.matchAll(pattern)].map((match) => match[1]));
 }
 
 function importedPackageName(specifier) {
@@ -76,8 +62,7 @@ function workspaceForPackageName(packageName, manifests) {
 }
 
 test("workspace dependency edges match the package architecture", async () => {
-  const { corePath, manifests, workspacePaths } = await readWorkspaceManifests();
-  const packagePaths = workspacePaths.filter((workspacePath) => workspacePath.startsWith("packages/"));
+  const { manifests } = await readWorkspaceManifests();
   const sortPaths = (paths) => paths.sort((left, right) => left.localeCompare(right));
 
   for (const [workspacePath, manifest] of Object.entries(manifests)) {
@@ -96,9 +81,12 @@ test("workspace dependency edges match the package architecture", async () => {
       .map(([, dependencyPath]) => dependencyPath)
       .sort((left, right) => left.localeCompare(right));
 
-    const expectedDependencies =
-      workspacePath === "apps/web" ? packagePaths : workspacePath === corePath ? [] : [corePath];
-    assert.deepEqual(workspaceDependencies, sortPaths(expectedDependencies), `${workspacePath} dependency direction`);
+    assert.ok(Object.hasOwn(allowedWorkspaceEdges, workspacePath), `${workspacePath} needs an explicit policy`);
+    assert.deepEqual(
+      workspaceDependencies,
+      sortPaths([...allowedWorkspaceEdges[workspacePath]]),
+      `${workspacePath} dependency direction`,
+    );
   }
 });
 
@@ -120,7 +108,7 @@ test("core source does not import UI, renderer, AI, persistence, or code outside
   const violations = [];
 
   for (const dependency of coreDependencies) {
-    if (forbiddenExternalImports.some((pattern) => pattern.test(dependency))) {
+    if (forbiddenCoreImports.some((pattern) => pattern.test(dependency))) {
       violations.push(`${corePath}/package.json declares forbidden dependency "${dependency}"`);
     }
   }
@@ -132,7 +120,7 @@ test("core source does not import UI, renderer, AI, persistence, or code outside
       const relativeTarget = specifier.startsWith(".") ? path.resolve(path.dirname(filePath), specifier) : null;
       const escapedCore = relativeTarget && !relativeTarget.startsWith(`${coreRoot}${path.sep}`);
       const forbiddenWorkspace = forbiddenWorkspaceNames.has(packageName);
-      const forbiddenExternal = forbiddenExternalImports.some((pattern) => pattern.test(specifier));
+      const forbiddenExternal = forbiddenCoreImports.some((pattern) => pattern.test(specifier));
 
       if (escapedCore || forbiddenWorkspace || forbiddenExternal) {
         violations.push(`${path.relative(repoRoot, filePath)} imports "${specifier}"`);
@@ -141,4 +129,103 @@ test("core source does not import UI, renderer, AI, persistence, or code outside
   }
 
   assert.deepEqual(violations, [], violations.join("\n"));
+});
+
+test("all workspaces use permitted public imports without cross-application dependencies", async () => {
+  const { manifests, workspacePaths } = await readWorkspaceManifests();
+  const violations = [];
+  for (const workspacePath of workspacePaths) {
+    for (const filePath of await listSourceFiles(path.join(repoRoot, workspacePath))) {
+      for (const specifier of moduleSpecifiers(await readFile(filePath, "utf8"))) {
+        const reason = workspaceImportViolation({ repoRoot, workspacePath, filePath, specifier, manifests });
+        if (reason) violations.push(`${path.relative(repoRoot, filePath)} imports "${specifier}": ${reason}`);
+      }
+    }
+  }
+  assert.deepEqual(violations, [], violations.join("\n"));
+});
+
+test("architecture policy rejects synthetic forbidden imports including the planned gateway", async () => {
+  const { manifests } = await readWorkspaceManifests();
+  manifests["apps/ai-gateway"] = { name: "@open-3d/ai-gateway" };
+  const check = (workspacePath, specifier) =>
+    workspaceImportViolation({
+      repoRoot,
+      workspacePath,
+      filePath: path.join(repoRoot, workspacePath, "src/index.ts"),
+      specifier,
+      manifests,
+    });
+  for (const [workspacePath, specifier] of [
+    ["apps/ai-gateway", "@open-3d/ai"],
+    ["apps/web", "@open-3d/ai-gateway"],
+    ["apps/web", "../../ai-gateway/src/index.ts"],
+    ["packages/ai", "@open-3d/viewport-three"],
+    ["packages/model-core", "react/jsx-runtime"],
+    ["packages/model-core", "@base-ui/react/menu"],
+    ["packages/model-core", "../../projects/src/index.ts"],
+    ["apps/web", "@open-3d/ai/src/modeling-tools.ts"],
+    ["apps/web", "@open-3d/unknown"],
+  ]) {
+    assert.ok(check(workspacePath, specifier), `${workspacePath}: ${specifier} should be rejected`);
+  }
+  assert.equal(check("apps/web", "@open-3d/ai/settings"), null);
+  assert.equal(check("packages/ai", "@open-3d/model-core"), null);
+});
+
+test("Modra runtime and semantic history remain independent of UI, SDKs and browser implementations", async () => {
+  const violations = [];
+  for (const directory of ["packages/ai/src/runtime", "packages/ai/src/messages", "packages/ai/src/tools"]) {
+    for (const filePath of await listSourceFiles(path.join(repoRoot, directory))) {
+      if (/\.test\./.test(filePath)) continue;
+      const source = await readFile(filePath, "utf8");
+      for (const reason of neutralRuntimeViolations({ repoRoot, filePath, source })) {
+        violations.push(`${path.relative(repoRoot, filePath)}: ${reason}`);
+      }
+    }
+  }
+  assert.deepEqual(violations, []);
+  const filePath = path.join(repoRoot, "packages/ai/src/runtime/example.ts");
+  for (const source of [
+    'import { useState } from "react";',
+    'import { tool } from "ai";',
+    'import { load } from "../settings.ts";',
+    'import { store } from "../../../../apps/web/src/modra/storage/store.ts";',
+    'import { ThreeViewport } from "@open-3d/viewport-three";',
+    'import { db } from "idb";',
+    'const db = indexedDB.open("modra");',
+    'const data = globalThis.localStorage.getItem("data");',
+    'const root = document.querySelector("div");',
+    "const image = new FileReader();",
+    "const message = `page: ${window.document.title}`;",
+  ])
+    assert.ok(neutralRuntimeViolations({ repoRoot, filePath, source }).length, source);
+  assert.deepEqual(
+    neutralRuntimeViolations({
+      repoRoot,
+      filePath,
+      source: 'import type { ModelingDocument } from "@open-3d/model-core";',
+    }),
+    [],
+  );
+  assert.deepEqual(
+    neutralRuntimeViolations({
+      repoRoot,
+      filePath,
+      source: "const message = `Invalid document. ${id}`; // document.querySelector()",
+    }),
+    [],
+  );
+  const manifest = await readManifest("packages/ai");
+  assert.equal(manifest.exports["."], "./src/index.ts");
+  assert.equal(manifest.exports["./settings"], "./src/settings.ts");
+  assert.equal(manifest.exports["./runtime"], "./src/runtime/index.ts");
+  assert.equal(manifest.exports["./session-title"], "./src/messages/session-title.ts");
+  // Local metadata is needed before Modra opens; keep provider SDKs lazy.
+  const titleHelpers = await readFile(path.join(repoRoot, "packages/ai/src/messages/session-title.ts"), "utf8");
+  assert.deepEqual(moduleSpecifiers(titleHelpers), []);
+  const titleStorage = await readFile(path.join(repoRoot, "apps/web/src/modra/storage/session-title.ts"), "utf8");
+  assert.ok(moduleSpecifiers(titleStorage).every((specifier) => specifier === "@open-3d/ai/runtime"));
+  const runtime = await readFile(path.join(repoRoot, "packages/ai/src/runtime/index.ts"), "utf8");
+  assert.match(runtime, /export \{ shortSessionTitle, limitSessionTitle \} from "\.\.\/messages\/session-title\.ts"/);
 });

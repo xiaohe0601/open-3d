@@ -1,3 +1,5 @@
+import { holdTemporaryScope } from "./modra/storage/temporary-scope-lock";
+import { trackModraClosure } from "./modra/storage/lifecycle";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { MousePointer2 } from "lucide-react";
@@ -12,6 +14,9 @@ import { Input } from "./components/ui/input";
 import { finiteNumberSchema } from "./lib/ui-schemas";
 import { useWorkspaceUiStore } from "./workspace-ui-store";
 
+import { WorkspaceModelingHost } from "./modra/controller/workspace-host";
+import { IndexedDBModraRepository, ModraStorageError } from "./modra/storage/indexeddb-repository";
+import { removeProjectWithSessions, type ProjectDeletion } from "./modra/storage/project-deletion";
 import { AIFloatingWorkspace } from "./workspace/ai-floating-workspace";
 import { loadAIProviderSponsors } from "./workspace/ai-provider-sponsors-data";
 import { LocalProjectsDialog } from "./workspace/local-projects-dialog";
@@ -19,6 +24,8 @@ import { ProjectTransferControls } from "./workspace/project-transfer-controls";
 import { SceneHierarchyPanel, WorkspaceHeader } from "./workspace/workspace-panels";
 import { UnsavedChangesDialog } from "./workspace/unsaved-changes-dialog";
 import { PropertySection } from "./workspace/property-section";
+import { describeSelection } from "./workspace/selection-status";
+import { parseProjectRoute, projectPath } from "./workspace/project-routes";
 import { ObjectIcon } from "./workspace/object-icon";
 import { ViewShortcuts } from "./workspace/view-shortcuts";
 import {
@@ -48,9 +55,22 @@ import {
 
 interface WorkspaceAppProps {
   projectStore?: LocalProjectStore;
+  modraRepository?: IndexedDBModraRepository;
+  /** The standalone entry owns browser history; embedded workspaces do not. */
+  projectRouting?: boolean;
 }
 
-export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAppProps = {}) {
+function isModraStorageUnavailable(cause: unknown) {
+  return (
+    cause instanceof ModraStorageError && ["unavailable", "quota", "corrupt", "newer-version"].includes(cause.code)
+  );
+}
+
+export function WorkspaceApp({
+  projectStore: providedProjectStore,
+  modraRepository: providedModraRepository,
+  projectRouting = false,
+}: WorkspaceAppProps = {}) {
   useEffect(() => {
     // Warm the page-scoped cache without blocking workspace startup.
     void loadAIProviderSponsors().catch(() => {});
@@ -60,10 +80,23 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
   const { t: tm } = useTranslation("modeling");
   const { t: tp } = useTranslation("projects");
   const resolvedTheme = useWorkspaceUiStore((state) => state.resolvedPreferences.theme);
-  const [processor, setProcessor] = useState(() => createProcessor({ ...emptyDocument(), name: tw("untitledScene") }));
+  const [modelingHost] = useState(
+    () =>
+      new WorkspaceModelingHost(
+        createProcessor({ ...emptyDocument(), name: tw("untitledProject") }),
+        `temporary:${crypto.randomUUID()}`,
+        () => crypto.randomUUID(),
+      ),
+  );
+  const processor = modelingHost.processor;
   const [revision, setRevision] = useState(0);
   const [currentProjectId, setCurrentProjectId] = useState<string | undefined>();
   const [isDirty, setIsDirty] = useState(false);
+  const dirtyRef = useRef(isDirty);
+  dirtyRef.current = isDirty;
+  const projectLoadRef = useRef(0);
+  const routeModeRef = useRef<"push" | "replace">("push");
+  const activePathRef = useRef("");
   const [isSaving, setIsSaving] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
@@ -73,6 +106,17 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [localProjects, setLocalProjects] = useState<LocalProjectSummary[]>([]);
   const [projectError, setProjectError] = useState<ProjectFailure | null>(null);
+  const [projectDeletions, setProjectDeletions] = useState<ProjectDeletion[]>([]);
+  const modraRepositoryRef = useRef<IndexedDBModraRepository | null>(null);
+  const getModraRepository = useCallback(() => {
+    return providedModraRepository ?? (modraRepositoryRef.current ??= new IndexedDBModraRepository());
+  }, [providedModraRepository]);
+  useEffect(
+    () => () => {
+      void modraRepositoryRef.current?.close();
+    },
+    [],
+  );
   const [unsavedDialogOpen, setUnsavedDialogOpen] = useState(false);
   const [projection, setProjection] = useState<ViewProjection>("perspective");
   const [view, setView] = useState<StandardView>("user");
@@ -111,8 +155,6 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
     items: { id: string; name: string; visible: boolean }[];
   };
 
-  liveProcessorRef.current = processor;
-  liveRevisionRef.current = revision;
   liveProjectIdRef.current = currentProjectId;
   transformConfigRef.current = {
     operation: transformTool,
@@ -121,13 +163,96 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
     snapStep: transformTool === "rotate" ? 15 : 0.1,
   };
 
-  const refresh = useCallback(() => setRevision((value) => value + 1), []);
+  const workspaceScopeId = modelingHost.snapshot().version.scopeId;
+  const syncProjectRoute = useCallback(
+    (mode: "push" | "replace") => {
+      if (!projectRouting) return;
+      const path = projectPath(modelingHost.savedProjectId, modelingHost.snapshot().version.scopeId);
+      if (window.location.pathname !== path) {
+        window.history[mode === "push" ? "pushState" : "replaceState"](null, "", path);
+      }
+      activePathRef.current = path;
+    },
+    [modelingHost, projectRouting],
+  );
+  useEffect(() => {
+    const lock = holdTemporaryScope(workspaceScopeId);
+    return () => {
+      const pendingSave = savePromiseRef.current;
+      if (pendingSave)
+        void pendingSave.then(
+          () => lock.close(),
+          () => lock.close(),
+        );
+      else lock.close();
+    };
+  }, [workspaceScopeId]);
+
+  useEffect(() => {
+    let disposed = false;
+    const savedIds = async () => (await projectStore.list()).map((project) => project.id);
+    const cleanup = async (scope: string) => {
+      // A save already dispatched to the project DB may finish after replacement.
+      await savePromiseRef.current?.catch(() => undefined);
+      if (disposed) return;
+      await getModraRepository().discardTemporaryScope(scope, await savedIds());
+    };
+    trackModraClosure(
+      savedIds()
+        .then((ids) => {
+          if (!disposed)
+            return getModraRepository().collectAbandonedTemporaryScopes(ids, modelingHost.snapshot().version.scopeId);
+        })
+        .catch(() => {
+          /* Leave data intact when either database is unavailable. */
+        }),
+    );
+    const unsubscribe = modelingHost.subscribe((event) => {
+      if (event.type === "changed" && event.abandonedScopeId) trackModraClosure(cleanup(event.abandonedScopeId));
+    });
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (!event.persisted && !modelingHost.savedProjectId)
+        trackModraClosure(cleanup(modelingHost.snapshot().version.scopeId));
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      disposed = true;
+      unsubscribe();
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [modelingHost, projectStore, getModraRepository]);
+
+  const refresh = useCallback(() => {
+    liveProcessorRef.current = modelingHost.processor;
+    liveRevisionRef.current += 1;
+    setRevision(liveRevisionRef.current);
+  }, [modelingHost]);
+
+  useEffect(
+    () =>
+      modelingHost.subscribe((event) => {
+        if (event.type === "preview") {
+          setAiPreviewDocument(event.document);
+          return;
+        }
+        // Transient ownership invalidates AI work, but does not replace the renderer's drag preview.
+        if (event.reason === "transient") return;
+        if (event.reason === "replace" || event.reason === "detach") sessionRef.current = null;
+        if (event.reason === "replace" || event.reason === "detach") {
+          projectLoadRef.current += 1;
+          syncProjectRoute(routeModeRef.current);
+        }
+        if (["manual", "applied", "undo", "redo"].includes(event.reason)) setIsDirty(true);
+        refresh();
+      }),
+    [modelingHost, refresh, syncProjectRoute],
+  );
   const runCommand = useCallback(
     (commandId: string, args: Record<string, unknown>, success: string) => {
       try {
-        liveProcessorRef.current.executeCommand({ commandId, arguments: args });
+        modelingHost.execute([{ commandId, arguments: args }]);
         setIsDirty(true);
-        setNotice(success);
+        setNotice(commandId.startsWith("selection.") ? "" : success);
         setError(null);
       } catch (cause) {
         const code = cause && typeof cause === "object" && "code" in cause ? String(cause.code) : "execution-failed";
@@ -143,20 +268,22 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
       }
       refresh();
     },
-    [refresh, setNotice],
+    [modelingHost, refresh, setNotice],
   );
 
   const refreshLocalProjects = useCallback(async () => {
     setProjectsLoading(true);
     setProjectError(null);
     try {
-      setLocalProjects(await projectStore.list());
+      const projects = await projectStore.list();
+      setLocalProjects(projects);
+      setProjectDeletions(await getModraRepository().projectDeletions());
     } catch (cause) {
       setProjectError({ kind: "storage", cause });
     } finally {
       setProjectsLoading(false);
     }
-  }, [projectStore]);
+  }, [projectStore, getModraRepository]);
 
   useEffect(() => {
     if (!projectsOpen || projectBusy) return;
@@ -173,14 +300,33 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
 
   const saveCurrentProject = useCallback(() => {
     const operation = (async () => {
-      const savedRevision = revision;
+      const savedRevision = liveRevisionRef.current;
+      const savedScene = modelingHost.snapshot();
+      const savedProjectId = modelingHost.savedProjectId;
       setIsSaving(true);
       setProjectError(null);
       try {
-        const saved = await projectStore.save(document, currentProjectId);
+        let historyUnavailable = false;
+        let targetProjectId = savedProjectId ?? crypto.randomUUID();
+        if (!savedProjectId) {
+          try {
+            targetProjectId = (await getModraRepository().prepareProjectScope(savedScene.version.scopeId)).projectId;
+          } catch (cause) {
+            if (!isModraStorageUnavailable(cause)) throw cause;
+            // Native scene storage is independent. Preserve unsupported history untouched.
+            historyUnavailable = true;
+          }
+        }
+        if (modelingHost.snapshot().version.generationId !== savedScene.version.generationId) return false;
+        const saved = await projectStore.save(savedScene.document, targetProjectId);
+        // A late save must never attach its record or clear dirty state on a replacement scene.
+        if (modelingHost.snapshot().version.generationId !== savedScene.version.generationId) return false;
+        modelingHost.adoptSavedProject(saved.id);
+        syncProjectRoute("replace");
+        liveProjectIdRef.current = saved.id;
         setCurrentProjectId(saved.id);
         if (liveRevisionRef.current === savedRevision) setIsDirty(false);
-        setNotice("");
+        setNotice(historyUnavailable ? i18n.t("savedWithoutModra", { ns: "projects" }) : "");
         if (projectsOpen) void refreshLocalProjects();
         return true;
       } catch (cause) {
@@ -203,7 +349,7 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
       },
     );
     return operation;
-  }, [currentProjectId, document, projectStore, projectsOpen, refreshLocalProjects, revision, setNotice]);
+  }, [modelingHost, projectStore, projectsOpen, refreshLocalProjects, setNotice, getModraRepository, syncProjectRoute]);
 
   useEffect(() => () => projectStore.close?.(), [projectStore]);
 
@@ -213,17 +359,14 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
     return () => window.clearTimeout(timeoutId);
   }, [notice, setNotice]);
 
-  const requestReplacement = useCallback(
-    (replacement: () => void) => {
-      if (isDirty) {
-        pendingReplacementRef.current = replacement;
-        setUnsavedDialogOpen(true);
-        return;
-      }
-      replacement();
-    },
-    [isDirty],
-  );
+  const requestReplacement = useCallback((replacement: () => void) => {
+    if (dirtyRef.current) {
+      pendingReplacementRef.current = replacement;
+      setUnsavedDialogOpen(true);
+      return;
+    }
+    replacement();
+  }, []);
 
   const continueReplacement = useCallback(() => {
     const replacement = pendingReplacementRef.current;
@@ -232,30 +375,110 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
     if (replacement) replacement();
   }, []);
 
-  const openLocalProject = useCallback(
-    (project: LocalProjectSummary) => {
+  const newProject = useCallback(
+    (routeMode: "push" | "replace" = "push") => {
+      projectLoadRef.current += 1;
       setProjectsOpen(false);
       requestReplacement(() => {
-        void projectStore
-          .load(project.id)
-          .then((savedDocument) => {
-            setProcessor(createProcessor(savedDocument));
+        const next = { ...emptyDocument(), name: i18n.t("untitledProject", { ns: "workspace" }) };
+        routeModeRef.current = routeMode;
+        modelingHost.replace(createProcessor(next), `temporary:${crypto.randomUUID()}`);
+        routeModeRef.current = "push";
+        liveProjectIdRef.current = undefined;
+        setCurrentProjectId(undefined);
+        setIsDirty(false);
+        setProjection(next.workspace.projection);
+        setView("user");
+        setTransformTool(null);
+        setProjectError(null);
+        setTransferError(null);
+        setError(null);
+        setNotice("");
+        refresh();
+      });
+    },
+    [modelingHost, refresh, requestReplacement, setNotice],
+  );
+
+  const openLocalProject = useCallback(
+    (project: Pick<LocalProjectSummary, "id">, routeMode: "push" | "replace" = "push") => {
+      const requestId = ++projectLoadRef.current;
+      setProjectsOpen(false);
+      void projectStore
+        .load(project.id)
+        .then(async (savedDocument) => {
+          if (requestId !== projectLoadRef.current) return;
+          let scope = `project:${project.id}`;
+          let historyUnavailable = false;
+          try {
+            scope = await getModraRepository().scopeForProject(project.id);
+          } catch (cause) {
+            if (!isModraStorageUnavailable(cause)) throw cause;
+            historyUnavailable = true;
+          }
+          if (requestId !== projectLoadRef.current) return;
+          requestReplacement(() => {
+            if (requestId !== projectLoadRef.current) return;
+            routeModeRef.current = routeMode;
+            modelingHost.replace(createProcessor(savedDocument), scope, project.id);
+            routeModeRef.current = "push";
+            liveProjectIdRef.current = project.id;
             setCurrentProjectId(project.id);
             setIsDirty(false);
             setProjectsOpen(false);
             setProjectError(null);
+            setTransferError(null);
+            setError(null);
+            setTransformTool(null);
+            setProjection(savedDocument.workspace.projection);
+            setView("user");
             refresh();
-            setNotice(i18n.t("opened", { ns: "projects", name: project.name }));
-          })
-          .catch((cause: unknown) => {
-            const message = describeProjectError(cause);
-            setProjectError({ kind: "storage", cause });
-            setNotice(message);
+            setNotice(
+              i18n.t(historyUnavailable ? "openedWithoutModra" : "opened", {
+                ns: "projects",
+                name: savedDocument.name,
+              }),
+            );
           });
-      });
+        })
+        .catch((cause: unknown) => {
+          if (requestId !== projectLoadRef.current) return;
+          syncProjectRoute("replace");
+          const message = describeProjectError(cause);
+          setProjectError({ kind: "storage", cause });
+          setNotice(message);
+        });
     },
-    [projectStore, refresh, requestReplacement, setNotice],
+    [modelingHost, projectStore, refresh, requestReplacement, setNotice, getModraRepository, syncProjectRoute],
   );
+
+  const routeActionsRef = useRef({ openLocalProject, newProject });
+  routeActionsRef.current = { openLocalProject, newProject };
+  useEffect(() => {
+    if (!projectRouting) return;
+    const initialRoute = parseProjectRoute(window.location.pathname);
+    activePathRef.current = projectPath(undefined, modelingHost.snapshot().version.scopeId);
+    if (initialRoute.kind === "saved") routeActionsRef.current.openLocalProject(initialRoute, "replace");
+    else syncProjectRoute("replace");
+    const onPopState = () => {
+      const targetPath = window.location.pathname;
+      const route = parseProjectRoute(window.location.pathname);
+      projectLoadRef.current += 1;
+      pendingReplacementRef.current = null;
+      setUnsavedDialogOpen(false);
+      // Keep the URL paired with the visible scene while loading or asking to discard edits.
+      window.history.replaceState(null, "", activePathRef.current);
+      if (targetPath === activePathRef.current) return;
+      if (route.kind === "saved") {
+        if (route.id !== modelingHost.savedProjectId) routeActionsRef.current.openLocalProject(route, "replace");
+      } else routeActionsRef.current.newProject("replace");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      projectLoadRef.current += 1;
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [projectRouting, modelingHost, syncProjectRoute]);
 
   async function manageLocalProject(
     project: LocalProjectSummary,
@@ -278,11 +501,7 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
       } else if (action === "duplicate") {
         await projectStore.duplicate(project.id, tp("copyName", { name: project.name }));
       } else {
-        await projectStore.remove(project.id);
-        if (liveProjectIdRef.current === project.id) {
-          setCurrentProjectId(undefined);
-          setIsDirty(true);
-        }
+        await deleteProjectAndSessions(project.id);
       }
       setNotice(tp(action === "rename" ? "renamed" : action === "duplicate" ? "duplicated" : "deleted"));
       await refreshLocalProjects();
@@ -291,6 +510,45 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
       setProjectError({ kind: "storage", cause });
       return false;
     } finally {
+      if (action === "delete") await refreshDeletionOperations();
+      projectMutationRef.current = false;
+      setProjectBusy(false);
+    }
+  }
+
+  async function refreshDeletionOperations() {
+    try {
+      setProjectDeletions(await getModraRepository().projectDeletions());
+    } catch (cause) {
+      setProjectError((previous) => previous ?? { kind: "storage", cause });
+    }
+  }
+
+  async function deleteProjectAndSessions(projectId: string) {
+    await removeProjectWithSessions(getModraRepository(), projectStore, projectId, (operation) => {
+      setProjectDeletions((previous) => [...previous.filter((item) => item.projectId !== projectId), operation]);
+      if (liveProjectIdRef.current === projectId || modelingHost.snapshot().version.scopeId === operation.scopeId) {
+        modelingHost.detachScope(`temporary:${crypto.randomUUID()}`);
+        liveProjectIdRef.current = undefined;
+        setCurrentProjectId(undefined);
+        setIsDirty(true);
+      }
+    });
+  }
+
+  async function resolveProjectDeletion(projectId: string, cancel: boolean) {
+    if (projectMutationRef.current || isSaving) return;
+    projectMutationRef.current = true;
+    setProjectBusy(true);
+    setProjectError(null);
+    try {
+      if (cancel) await getModraRepository().cancelProjectDeletion(projectId);
+      else await deleteProjectAndSessions(projectId);
+      await refreshLocalProjects();
+    } catch (cause) {
+      setProjectError({ kind: "storage", cause });
+    } finally {
+      await refreshDeletionOperations();
       projectMutationRef.current = false;
       setProjectBusy(false);
     }
@@ -370,7 +628,8 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
         }
         setProjectsOpen(false);
         requestReplacement(() => {
-          setProcessor(createProcessor(importedDocument));
+          modelingHost.replace(createProcessor(importedDocument), `temporary:${crypto.randomUUID()}`);
+          liveProjectIdRef.current = undefined;
           setCurrentProjectId(undefined);
           setIsDirty(true);
           setProjection(importedDocument.workspace.projection);
@@ -395,7 +654,7 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
         setNotice(message);
       }
     },
-    [refresh, requestReplacement, setNotice],
+    [modelingHost, refresh, requestReplacement, setNotice],
   );
 
   useEffect(() => {
@@ -416,7 +675,8 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
   const transformHandler = useMemo<ViewportTransformHandler>(
     () => ({
       begin() {
-        if (!selectedObject(liveProcessorRef.current.getDocumentSnapshot())) return false;
+        if (!selectedObject(liveProcessorRef.current.getDocumentSnapshot()) || !modelingHost.beginTransient())
+          return false;
         sessionRef.current = { source: liveProcessorRef.current.getDocumentSnapshot(), values: [0, 0, 0] };
         return true;
       },
@@ -444,22 +704,24 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
         const command = makeTransformCommand(session.source, session.values);
         if (command) {
           try {
-            liveProcessorRef.current.executeCommand(command);
+            modelingHost.endTransient([command]);
             setIsDirty(true);
           } catch {
             viewportRef.current?.setDocument(session.source);
           }
         }
+        modelingHost.endTransient();
         sessionRef.current = null;
         refresh();
       },
       cancel() {
         const session = sessionRef.current;
         if (session) viewportRef.current?.setDocument(session.source);
+        modelingHost.endTransient();
         sessionRef.current = null;
       },
     }),
-    [makeTransformCommand, refresh],
+    [modelingHost, makeTransformCommand, refresh],
   );
 
   useEffect(() => {
@@ -471,6 +733,7 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
       if (disposed) return;
       viewport = new Viewport();
       viewportRef.current = viewport;
+      modelingHost.setViewportCapture(() => viewport!.capture());
       viewport.mount(host);
       viewport.setViewChangeHandler(setView);
       setViewportReady(true);
@@ -482,23 +745,13 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
             if (objectIds.has(pick.objectId)) objectIds.delete(pick.objectId);
             else objectIds.add(pick.objectId);
           }
-          runCommand(
-            "selection.setObjects",
-            { objectIds: [...objectIds] },
-            objectIds.size
-              ? i18n.t("selectionUpdated", { ns: "workspace" })
-              : i18n.t("selectionCleared", { ns: "workspace" }),
-          );
+          runCommand("selection.setObjects", { objectIds: [...objectIds] }, "");
           return;
         }
         if (!pick) {
           const objectId = current.selection.activeObjectId;
           if (!objectId) return;
-          runCommand(
-            "selection.setComponents",
-            { objectId, mode: current.selection.mode, componentIds: [] },
-            i18n.t("selectionCleared", { ns: "workspace" }),
-          );
+          runCommand("selection.setComponents", { objectId, mode: current.selection.mode, componentIds: [] }, "");
           return;
         }
         const objectId = pick?.objectId ?? current.selection.activeObjectId;
@@ -518,9 +771,7 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
             mode: current.selection.mode,
             componentIds: [...selectedIds],
           },
-          selectedIds.size
-            ? i18n.t("componentSelectionUpdated", { ns: "workspace" })
-            : i18n.t("selectionCleared", { ns: "workspace" }),
+          "",
         );
       });
     });
@@ -528,6 +779,7 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
       disposed = true;
       viewport?.dispose();
       viewportRef.current = null;
+      modelingHost.setViewportCapture(undefined);
       setViewportReady(false);
     };
   }, [runCommand]);
@@ -580,6 +832,14 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
     runCommand("object.setTransform", { objectId: object.id, transform }, tw("transformUpdated", { group: tw(group) }));
   }
 
+  const selection = describeSelection(document);
+  const selectionLabel =
+    selection.kind === "objects"
+      ? selection.names
+      : selection.kind === "components"
+        ? tw("selectedComponents", { ...selection, mode: tm(`selectionModes.${selection.mode}`) })
+        : tw("nothingSelected");
+
   const objectEuler = object ? quaternionToEuler(object.transform.rotation) : ([0, 0, 0] as Vec3);
 
   return (
@@ -593,14 +853,14 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
         saveDisabled={projectBusy}
         hasLocalSave={currentProjectId !== undefined}
         onUndo={() => {
-          if (processor.undo()) {
+          if (modelingHost.undo()) {
             setIsDirty(true);
             setNotice(tw("actionUndone"));
             refresh();
           }
         }}
         onRedo={() => {
-          if (processor.redo()) {
+          if (modelingHost.redo()) {
             setIsDirty(true);
             setNotice(tw("actionRestored"));
             refresh();
@@ -652,15 +912,11 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
           }))}
           activeObjectId={object?.id ?? null}
           selectedObjectIds={document.selection.objectIds}
-          onSelectObject={(objectId, name, extendSelection) => {
+          onSelectObject={(objectId, _name, extendSelection) => {
             const objectIds = new Set(extendSelection ? document.selection.objectIds : []);
             if (objectIds.has(objectId)) objectIds.delete(objectId);
             else objectIds.add(objectId);
-            runCommand(
-              "selection.setObjects",
-              { objectIds: [...objectIds] },
-              objectIds.size ? tw("namedSelected", { name }) : i18n.t("selectionCleared", { ns: "workspace" }),
-            );
+            runCommand("selection.setObjects", { objectIds: [...objectIds] }, "");
           }}
           onToggleVisibility={(item) =>
             runCommand(
@@ -722,15 +978,8 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
           <div className="context-bar flex min-h-[43px] items-center gap-[14px] border-t border-rule px-[13px] max-[860px]:flex-wrap max-[860px]:gap-1.5 max-[860px]:py-1.5 max-[860px]:px-[10px]">
             <div className="context-copy flex min-w-0 flex-1 items-center gap-[7px] text-[13px] text-muted max-[860px]:flex-1">
               <span className="context-indicator size-1.5 rounded-full bg-positive" />
-              <span className="min-w-0 truncate">
-                {notice ||
-                  (object ? (
-                    <>
-                      <strong className="font-medium text-foreground">{object.name}</strong> {tw("selected")}
-                    </>
-                  ) : (
-                    tw("nothingSelected")
-                  ))}
+              <span className="min-w-0 truncate" title={notice || selectionLabel}>
+                {notice || selectionLabel}
               </span>
             </div>
             <div className="quick-tools flex items-center gap-1 rounded-md bg-soft p-0.5">
@@ -739,13 +988,7 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
                   variant="segmented"
                   className="quick-tool h-[23px] rounded px-2 text-[13px]"
                   key={mode}
-                  onClick={() =>
-                    runCommand(
-                      "selection.setMode",
-                      { mode, conversion: "convert" },
-                      tm("selectionModeUpdated", { mode: tm(`selectionModes.${mode}`) }),
-                    )
-                  }
+                  onClick={() => runCommand("selection.setMode", { mode, conversion: "convert" }, "")}
                   disabled={mode !== "object" && !object?.mesh}
                   aria-pressed={document.selection.mode === mode}
                 >
@@ -867,25 +1110,24 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
         currentProjectId={currentProjectId}
         loading={projectsLoading}
         busy={projectBusy || isSaving}
-        error={projectError ? describeProjectFailure(projectError) : null}
+        error={
+          projectError?.kind === "storage" && projectError.cause instanceof ModraStorageError
+            ? tp("sessionStorageFailed")
+            : projectError
+              ? describeProjectFailure(projectError)
+              : null
+        }
+        deletions={projectDeletions}
+        onRetryDeletion={(id) => void resolveProjectDeletion(id, false)}
+        onCancelDeletion={(id) => void resolveProjectDeletion(id, true)}
         onOpenChange={setProjectsOpen}
         onOpenProject={openLocalProject}
+        onNewProject={() => newProject()}
         onRenameProject={(project, name) => manageLocalProject(project, "rename", name)}
         onDuplicateProject={(project) => void manageLocalProject(project, "duplicate")}
         onDeleteProject={(project) => manageLocalProject(project, "delete")}
       />
-      <AIFloatingWorkspace
-        document={document}
-        onPreviewDocument={setAiPreviewDocument}
-        onAcceptProposal={(commands) => {
-          liveProcessorRef.current.executeGroup(commands);
-          setAiPreviewDocument(null);
-          setIsDirty(true);
-          setError(null);
-          refresh();
-          return liveProcessorRef.current.getDocumentSnapshot();
-        }}
-      />
+      <AIFloatingWorkspace modelingHost={modelingHost} />
       <UnsavedChangesDialog
         open={unsavedDialogOpen}
         onOpenChange={(open) => {
@@ -900,7 +1142,7 @@ export function WorkspaceApp({ projectStore: providedProjectStore }: WorkspaceAp
         onDiscard={continueReplacement}
       />
       <div className="pointer-events-none sr-only" role="status" aria-live="polite">
-        {notice}
+        {notice || selectionLabel}
       </div>
     </main>
   );

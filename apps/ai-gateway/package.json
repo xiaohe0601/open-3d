@@ -1,0 +1,23 @@
+{
+  "name": "@open-3d/ai-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "dry-run": "wrangler deploy --dry-run --outdir dist",
+    "test": "vp test run",
+    "deploy": "node cli/deploy.mjs"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.11.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261023.1",
+    "miniflare": "5.20261019.2-beta",
+    "typescript": "^7.0.2",
+    "wrangler": "4.152.0"
+  }
+}

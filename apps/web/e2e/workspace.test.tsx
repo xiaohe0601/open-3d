@@ -1,3 +1,11 @@
+import { mockModelFetch } from "./helpers/model-fetch";
+import { addPrimitive, click, fill, openAddObjectMenu, openAISettings, settleAIPosition } from "./helpers/workspace";
+import { responsesFixture, anthropicFixture, geminiFixture } from "../../../tests/fixtures/ai/native-protocols";
+import {
+  chatTextResponse,
+  chatToolCallResponse,
+  controlledChatResponse,
+} from "../../../tests/fixtures/ai/chat-completions";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vite-plus/test";
@@ -8,27 +16,100 @@ import {
   LOCAL_PROJECTS_DATABASE_NAME,
   serializeNativeProject,
 } from "@open-3d/projects";
-import { AI_PROVIDER_SETTINGS_STORAGE_KEY, loadAIProviderSettings, saveAIProviderSettings } from "@open-3d/ai/settings";
+import {
+  AI_PROVIDER_SETTINGS_STORAGE_KEY,
+  loadAIProviderSettings,
+  saveAIProviderSettings,
+  removeAIProviderCredential,
+} from "@open-3d/ai/settings";
 import { workspacePreferencesStorageKey } from "../src/workspace-preferences";
 import { MODELING_COMMANDS, MODELING_QUERIES } from "@open-3d/model-core";
 import type { LocalProjectStore, LocalProjectStorageErrorCode } from "@open-3d/projects";
 import { createProcessor, emptyDocument } from "../src/workspace/modeling";
 import { initializeWorkspacePreferences } from "../src/workspace-preferences";
+import { WorkspaceModelingHost } from "../src/modra/controller/workspace-host";
+import {
+  IndexedDBModraRepository,
+  ModraStorageError,
+  MODRA_DATABASE_NAME,
+} from "../src/modra/storage/indexeddb-repository";
+import { drainModraClosures } from "../src/modra/controller/use-modra-controller";
 import { WorkspaceApp } from "../src/app";
 import { LocalProjectsDialog } from "../src/workspace/local-projects-dialog";
 import { ThreeViewport } from "@open-3d/viewport-three";
 import { initializeI18n } from "../src/i18n";
+import { ai } from "../src/i18n/ai";
+import { projects } from "../src/i18n/projects";
 import { useWorkspaceUiStore } from "../src/workspace-ui-store";
 
 let container: HTMLDivElement;
 let root: Root;
 
+test.each([390, 768, 1440])("keeps project menus and reference-header actions compact at %i", async (width) => {
+  await page.viewport(width, 900);
+  await addPrimitive();
+  await click(page.getByRole("button", { name: "Save", exact: true }));
+  await click(page.getByRole("button", { name: "Open projects", exact: true }));
+  const manager = page.getByRole("dialog", { name: "Projects", exact: true });
+  await click(manager.getByRole("button", { name: /^Manage / }));
+  const menu = page.getByRole("menu");
+  expect(menu.element().getBoundingClientRect().width).toBeLessThan(150);
+  await expect.poll(() => getComputedStyle(menu.element()).opacity).toBe("1");
+  await click(page.getByRole("menuitem", { name: "Delete", exact: true }));
+  await expect.element(page.getByText(projects.en.deleteDescription, { exact: true })).toBeInTheDocument();
+  await click(page.getByRole("button", { name: "Cancel", exact: true }));
+  await click(page.getByRole("button", { name: "Close projects", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await expect.element(page.getByRole("button", { name: ai.en.attachSelection, exact: true })).not.toBeInTheDocument();
+  await click(page.getByRole("button", { name: ai.en.mentionObject, exact: true }));
+  const references = page.getByRole("dialog", { name: ai.en.mentionObject, exact: true });
+  expect(references.element()).not.toHaveAttribute("aria-describedby");
+  await expect
+    .element(references.getByRole("textbox", { name: ai.en.searchObjects }))
+    .toHaveAttribute("placeholder", ai.en.searchObjects);
+  await expect.element(page.getByText(ai.en.referenceDescription, { exact: true })).not.toBeInTheDocument();
+  const search = references.getByRole("textbox", { name: ai.en.searchObjects });
+  for (const height of [900, 360]) {
+    await page.viewport(width, height);
+    await expect.poll(() => references.element().getBoundingClientRect().height).toBe(Math.min(400, height - 32));
+    await fill(search, "no matching object");
+    await expect.element(page.getByText(ai.en.noReferenceObjects, { exact: true })).toBeVisible();
+    expect(references.element().getBoundingClientRect().height).toBe(Math.min(400, height - 32));
+    await fill(search, "");
+    expect(references.element().getBoundingClientRect().height).toBe(Math.min(400, height - 32));
+    expect(references.element().scrollHeight).toBe(references.element().clientHeight);
+  }
+  const attach = references.getByRole("button", { name: ai.en.attachSelection, exact: true });
+  const close = references.getByRole("button", { name: ai.en.closeReferences, exact: true });
+  expect(
+    Math.abs(attach.element().getBoundingClientRect().top - close.element().getBoundingClientRect().top),
+  ).toBeLessThan(1);
+  await click(attach);
+  await expect.element(references).not.toBeInTheDocument();
+  expect(document.querySelectorAll(".ai-prompt-form [data-object-reference]")).toHaveLength(1);
+});
+
+test.each(["en", "zh-CN"] as const)("uses one selection status for objects and components in %s", async (language) => {
+  await act(async () => {
+    await initializeI18n(language);
+  });
+  const status = document.querySelector(".context-copy")!;
+  expect(status.textContent).toBe(language === "en" ? "Nothing selected" : "未选择物体或组件");
+  await addPrimitive();
+  const name = language === "en" ? "Box" : "立方体";
+  const box = page.getByRole("button", { name, exact: true });
+  await click(box);
+  expect(status.textContent).toBe(name);
+  await click(page.getByRole("button", { name: language === "en" ? "Face" : "面", exact: true }));
+  expect(status.textContent).toBe(`${name} · ${language === "en" ? "Face" : "面"} × 6`);
+});
+
 vi.mock("@open-3d/ai", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@open-3d/ai")>();
   return {
     ...actual,
-    streamOpenAICompatibleChat: (options: Parameters<typeof actual.streamOpenAICompatibleChat>[0]) =>
-      actual.streamOpenAICompatibleChat({ ...options, retry: { ...options.retry, initialDelayMs: 0 } }),
+    createModraProvider: (options: Parameters<typeof actual.createModraProvider>[0]) =>
+      actual.createModraProvider({ ...options, retryTiming: { initialDelayMs: 0 } }),
   };
 });
 
@@ -54,14 +135,15 @@ beforeEach(async () => {
   delete document.documentElement.dataset.theme;
   document.documentElement.style.colorScheme = "";
   document.documentElement.lang = "en";
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.deleteDatabase(LOCAL_PROJECTS_DATABASE_NAME);
-    request.addEventListener("success", () => resolve(), { once: true });
-    request.addEventListener("error", () => reject(request.error), { once: true });
-    request.addEventListener("blocked", () => reject(new Error("Local project database is still in use.")), {
-      once: true,
+  for (const database of [LOCAL_PROJECTS_DATABASE_NAME, MODRA_DATABASE_NAME])
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(database);
+      request.addEventListener("success", () => resolve(), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+      request.addEventListener("blocked", () => reject(new Error("Local project database is still in use.")), {
+        once: true,
+      });
     });
-  });
   useWorkspaceUiStore.getState().setNotice("");
   await page.viewport(1440, 1000);
   container = document.createElement("div");
@@ -73,131 +155,6 @@ beforeEach(async () => {
     await expect.element(page.getByRole("application", { name: "Interactive 3D scene" })).toBeInTheDocument();
   });
 });
-
-async function click(target: ReturnType<typeof page.getByRole>) {
-  await act(async () => userEvent.click(target));
-  if (document.querySelector(".ai-floating-content > [role=status]")?.checkVisibility()) {
-    // Let Suspense commit before entering an act-wrapped interaction with the lazy panel.
-    await expect.element(page.getByRole("region", { name: /^(AI conversation|AI 对话)$/ })).toBeInTheDocument();
-  }
-  if (document.querySelector('[data-testid="ai-floating-dialog"][data-open]')) await settleAIPosition();
-}
-
-async function settleAIPosition() {
-  await expect
-    .poll(() => {
-      const dialog = document.querySelector<HTMLElement>('[data-testid="ai-floating-dialog"]');
-      return Boolean(
-        dialog?.checkVisibility() && dialog.style.visibility !== "hidden" && !dialog.getAnimations().length,
-      );
-    })
-    .toBe(true);
-}
-
-let creationReturnPanel: string | undefined;
-async function openAddObjectMenu() {
-  creationReturnPanel = document.querySelector<HTMLElement>(".studio")?.dataset.panel;
-  const left = document.querySelector(".left-panel");
-  if (!left?.checkVisibility()) {
-    await click(
-      page
-        .getByRole("navigation", { name: /^(Workspace panels|工作区面板)$/ })
-        .getByRole("button", { name: /^(Objects|物体)$/, exact: true }),
-    );
-  }
-  await click(page.getByRole("button", { name: /^(Add object|添加物体)$/ }));
-}
-
-async function addPrimitive(primitive: "box" | "uv-sphere" | "cylinder" = "box") {
-  await openAddObjectMenu();
-  const names = {
-    box: /^(Add Box|添加立方体)$/,
-    "uv-sphere": /^(Add Sphere|添加球体)$/,
-    cylinder: /^(Add Cylinder|添加圆柱体)$/,
-  };
-  await click(
-    page.getByRole("menu", { name: /^(Add object|添加物体)$/ }).getByRole("menuitem", { name: names[primitive] }),
-  );
-  if (
-    creationReturnPanel &&
-    creationReturnPanel !== "scene" &&
-    document.querySelector(".panel-navigation")?.checkVisibility()
-  ) {
-    await click(
-      page.getByRole("navigation", { name: /^(Workspace panels|工作区面板)$/ }).getByRole("button", {
-        name: creationReturnPanel === "viewport" ? /^(3D viewport|3D 视口)$/ : /^(Properties|属性)$/,
-      }),
-    );
-  }
-}
-
-async function openAISettings() {
-  if (!document.querySelector('[data-testid="ai-floating-dialog"]')?.checkVisibility()) {
-    await click(page.getByRole("button", { name: /^(AI chat|AI 对话)$/ }));
-  }
-  await click(page.getByRole("button", { name: /^(Open AI provider settings|打开 AI 服务设置)$/ }));
-}
-
-function chatToolCallResponse(id: string, name: string, args: Record<string, unknown>) {
-  return new Response(
-    [
-      `data: ${JSON.stringify({
-        id: `chatcmpl-${id}`,
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "test-model",
-        choices: [
-          {
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: 0,
-                  id: `call-${id}`,
-                  type: "function",
-                  function: { name, arguments: JSON.stringify(args) },
-                },
-              ],
-            },
-            finish_reason: null,
-          },
-        ],
-      })}\n\n`,
-      `data: ${JSON.stringify({
-        id: `chatcmpl-${id}`,
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "test-model",
-        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-      })}\n\n`,
-      "data: [DONE]\n\n",
-    ].join(""),
-    { headers: { "content-type": "text/event-stream" } },
-  );
-}
-
-function chatTextResponse(id: string, text: string) {
-  return new Response(
-    [
-      `data: ${JSON.stringify({
-        id: `chatcmpl-${id}`,
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "test-model",
-        choices: [{ index: 0, delta: { content: text }, finish_reason: null }],
-      })}\n\n`,
-      `data: ${JSON.stringify({
-        id: `chatcmpl-${id}`,
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "test-model",
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-      })}\n\n`,
-      "data: [DONE]\n\n",
-    ].join(""),
-    { headers: { "content-type": "text/event-stream" } },
-  );
-}
 
 function failingProjectStore(code: LocalProjectStorageErrorCode): LocalProjectStore {
   const fail = (): never => {
@@ -230,6 +187,7 @@ function failingProjectStore(code: LocalProjectStorageErrorCode): LocalProjectSt
 
 afterEach(async () => {
   await act(async () => root.unmount());
+  await drainModraClosures();
   container.remove();
   vi.restoreAllMocks();
 });
@@ -288,7 +246,10 @@ test.each([
     expect(document.querySelector(".statusbar")).toBeNull();
     expect(context.nextElementSibling).toBeNull();
     await addPrimitive();
-    await click(page.getByRole("button", { name: language === "en" ? "Delete Box" : "删除 立方体", exact: true }));
+    await click(
+      page.getByRole("button", { name: language === "en" ? "Actions for Box" : "立方体 的操作", exact: true }),
+    );
+    await click(page.getByRole("menuitem", { name: language === "en" ? "Delete Box" : "删除 立方体", exact: true }));
     expect(document.querySelectorAll(".object-row")).toHaveLength(0);
     expect(viewport.querySelector("canvas")).toBe(canvas);
     expect(viewport.textContent).toBe("");
@@ -346,7 +307,7 @@ test.each([
   await click(nav.getByRole("button", { name: zh ? "物体" : "Objects", exact: true }));
   expectHeight(".object-row", 36);
   const actions = document.querySelectorAll<HTMLElement>('.object-row > [data-slot="button"]:not(:first-child)');
-  expect(actions).toHaveLength(3);
+  expect(actions).toHaveLength(1);
   for (const action of actions) {
     expect(action.getBoundingClientRect().height).toBe(32);
     expect(action.getBoundingClientRect().width).toBe(32);
@@ -359,6 +320,34 @@ test.each([
     .toEqual([32, 32, 32]);
   await act(async () => userEvent.keyboard("{Escape}"));
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+});
+test.for([390, 768, 1440])("aligns the icon-only stop control with request status at %i", async (width) => {
+  await page.viewport(width, 900);
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example.test/v1",
+    modelId: "test-model",
+  });
+  const stream = controlledChatResponse("stop-layout");
+  mockModelFetch().mockResolvedValueOnce(stream.response);
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: ai.en.message }), "Build a lamp");
+  await click(page.getByRole("button", { name: ai.en.send }));
+  await act(async () => stream.text("I am checking the lamp proportions."));
+  await expect.element(page.getByText("I am checking the lamp proportions.", { exact: true })).toBeVisible();
+  const stop = page.getByRole("button", { name: ai.en.cancelRequest, exact: true });
+  const node = stop.element();
+  const bounds = node.getBoundingClientRect();
+  const row = document.querySelector<HTMLElement>(".ai-request-status")!.getBoundingClientRect();
+  const status = node.parentElement!.querySelector<HTMLElement>('[role="status"]')!.getBoundingClientRect();
+  expect(node.textContent).toBe("");
+  expect(node.querySelector(".lucide-square")).not.toBeNull();
+  expect(bounds.width).toBe(24);
+  expect(bounds.right).toBeCloseTo(row.right, 0);
+  expect(bounds.y + bounds.height / 2).toBeCloseTo(status.y + status.height / 2, 0);
+  await click(stop);
+  await expect.element(page.getByText(ai.en.cancelled, { exact: true })).toBeVisible();
+  await expect.element(stop).not.toBeInTheDocument();
 });
 
 test.each([
@@ -593,7 +582,7 @@ test.each([
       Number(getComputedStyle(page.getByTestId("ai-floating-dialog").element()).zIndex),
     );
     const noticeToggle = dialog.getByRole("button", {
-      name: zh ? "本地配置与请求隐私" : "Local settings and request privacy",
+      name: ai[language].credentialSummary,
       exact: true,
     });
     await expect.element(noticeToggle).toHaveAttribute("aria-expanded", "false");
@@ -601,11 +590,7 @@ test.each([
     expect(notice.checkVisibility()).toBe(false);
     await click(noticeToggle);
     await expect.poll(() => notice.checkVisibility()).toBe(true);
-    expect(notice.textContent).toBe(
-      zh
-        ? "Open 3D 不会上传任何服务配置信息，所有配置均保存在浏览器本地，请确认当前环境安全后再输入相关信息。AI 请求将由浏览器直接发送至服务提供商，不经过 Open 3D 服务器中转。"
-        : "Open 3D does not upload any service configuration information. All settings are stored locally in your browser. Please ensure your current environment is secure before entering any information. AI requests are sent directly from your browser to the service provider, without passing through Open 3D servers.",
-    );
+    expect(notice.textContent).toBe(ai[language].credentialNotice);
     const form = dialog.element().querySelector("form")!;
     expect(form.contains(notice)).toBe(false);
     expect(notice.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -620,9 +605,7 @@ test.each([
       dialog.getByRole("button", { name: zh ? "关闭 AI 服务设置" : "Close AI provider settings", exact: true }),
     );
     await expect.poll(() => backdrop().length).toBe(0);
-    await expect
-      .element(page.getByRole("region", { name: zh ? "AI 对话" : "AI conversation", exact: true }))
-      .toBeVisible();
+    await expect.element(page.getByRole("region", { name: zh ? "Modra" : "Modra", exact: true })).toBeVisible();
   },
 );
 
@@ -694,7 +677,7 @@ test.each(["light", "dark"] as const)(
     });
     expectRingUnclipped(search.element());
     await act(async () => userEvent.keyboard("{Escape}"));
-    await click(page.getByRole("button", { name: "AI chat", exact: true }));
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
     const prompt = page.getByRole("textbox", { name: "Message", exact: true });
     await act(async () => {
       prompt.element().focus();
@@ -806,15 +789,23 @@ test.each(["light", "dark"] as const)(
   async (theme) => {
     await act(async () => useWorkspaceUiStore.getState().updateDisplayPreferences({ theme, language: "en" }));
     await addPrimitive();
-    const hide = page.getByRole("button", { name: "Hide Box", exact: true });
-    await act(async () => userEvent.hover(hide));
-    await expectButtonSurface(hide, "soft");
-    const hitbox = hide.element().getBoundingClientRect();
-    expect(hitbox.width).toBeGreaterThanOrEqual(hitbox.height - 1);
+    const actions = page.getByRole("button", { name: "Actions for Box", exact: true });
+    await act(async () => userEvent.hover(actions));
+    await expectButtonSurface(actions, "soft");
+    await click(actions);
+    const hide = page.getByRole("menuitem", { name: "Hide Box", exact: true });
     await click(hide);
-    await click(page.getByRole("button", { name: "Show Box", exact: true }));
+    await click(actions);
+    await click(page.getByRole("menuitem", { name: "Show Box", exact: true }));
+    await click(actions);
+    const duplicate = page.getByRole("menuitem", { name: "Duplicate Box", exact: true });
+    await act(async () => userEvent.hover(duplicate));
+    await expectButtonSurface(duplicate, "soft");
+    const remove = page.getByRole("menuitem", { name: "Delete Box", exact: true });
+    await act(async () => userEvent.hover(remove));
+    await expectButtonSurface(remove, "negative-soft");
+    await act(async () => userEvent.keyboard("{Escape}"));
     for (const target of [
-      page.getByRole("button", { name: "Duplicate Box", exact: true }),
       page.getByRole("button", { name: "Save", exact: true }),
       page.getByRole("button", { name: "Open projects", exact: true }),
     ]) {
@@ -822,9 +813,6 @@ test.each(["light", "dark"] as const)(
       await expectButtonSurface(target, "soft");
       expect(getComputedStyle(target.element()).color).not.toBe(semanticColor("primary-foreground"));
     }
-    const remove = page.getByRole("button", { name: "Delete Box", exact: true });
-    await act(async () => userEvent.hover(remove));
-    await expectButtonSurface(remove, "negative-soft");
   },
 );
 
@@ -850,7 +838,7 @@ test.each(["light", "dark"] as const)(
 test.each([390, 768])("keeps narrow-screen tools reachable below the default AI launcher at %ipx", async (width) => {
   await page.viewport(width, 844);
   await addPrimitive();
-  const launcher = page.getByRole("button", { name: "AI chat", exact: true });
+  const launcher = page.getByRole("button", { name: "Modra", exact: true });
   const launcherBounds = launcher.element().getBoundingClientRect();
   for (const name of ["Object", "Vertex", "Edge", "Face", "Move", "Rotate", "Scale"]) {
     const button = page.getByRole("button", { name, exact: true });
@@ -1048,7 +1036,7 @@ test("persists display preferences separately from saved and exported projects",
   await click(page.getByRole("button", { name: "Save", exact: true }));
   await expect.poll(() => document.querySelector(".save-state")?.textContent).toBe("Saved");
   expect(document.querySelector(".context-copy")!.textContent).not.toContain("saved");
-  await expect.element(page.getByRole("status")).toHaveTextContent("");
+  await expect.element(page.getByRole("status")).toHaveTextContent("Box");
   await click(page.getByRole("button", { name: "Export", exact: true }));
   await click(page.getByRole("menuitem", { name: "open3d", exact: true }));
 
@@ -1071,7 +1059,7 @@ test("keeps transient notices from blocking workspace controls", async () => {
   await expect.element(toast).toHaveTextContent("Object added to the scene");
   expect(getComputedStyle(toast.element()).pointerEvents).toBe("none");
   await new Promise((resolve) => window.setTimeout(resolve, 3100));
-  await expect.element(toast).toHaveTextContent("");
+  await expect.element(toast).toHaveTextContent("Box");
   await click(page.getByRole("button", { name: "Move", exact: true }));
 });
 
@@ -1176,7 +1164,8 @@ test("creates, renames, duplicates, and undoes a scene object", async () => {
   await act(async () => userEvent.keyboard("{Enter}"));
   await expect.element(page.getByRole("button", { name: "Desk block", exact: true })).toBeInTheDocument();
 
-  await click(page.getByRole("button", { name: "Duplicate Desk block", exact: true }));
+  await click(page.getByRole("button", { name: "Actions for Desk block", exact: true }));
+  await click(page.getByRole("menuitem", { name: "Duplicate Desk block", exact: true }));
   await expect.element(page.getByRole("button", { name: "Desk block copy", exact: true })).toBeInTheDocument();
   await click(page.getByRole("button", { name: "Undo" }));
   expect(document.querySelector("canvas")).toBe(initialCanvas);
@@ -1257,19 +1246,34 @@ test.each([
       }
     }
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    const actions = panel.getByRole("button", { name: zh ? `${name} 的操作` : `Actions for ${name}`, exact: true });
+    await click(actions);
+    const menu = page.getByRole("menu");
+    await expect.element(menu).toBeVisible();
+    expect(menu.getByRole("menuitem").elements()).toHaveLength(3);
+    const menuBounds = menu.element().getBoundingClientRect();
+    expect(menuBounds.left).toBeGreaterThanOrEqual(0);
+    expect(menuBounds.right).toBeLessThanOrEqual(width);
+    await act(async () => userEvent.keyboard("{Escape}"));
+    await expect.element(actions).toHaveFocus();
   },
 );
 
 test("manages scene objects from the hierarchy", async () => {
   await addPrimitive();
-  await click(page.getByRole("button", { name: "Hide Box" }));
-  await expect.element(page.getByRole("button", { name: "Show Box" })).toBeInTheDocument();
-  await click(page.getByRole("button", { name: "Show Box" }));
-  await expect.element(page.getByRole("button", { name: "Hide Box" })).toBeInTheDocument();
-
-  await click(page.getByRole("button", { name: "Duplicate Box" }));
+  const actions = (name: string) => page.getByRole("button", { name: `Actions for ${name}`, exact: true });
+  expect(page.getByTestId("object-row").element().querySelectorAll("button")).toHaveLength(2);
+  await click(actions("Box"));
+  await click(page.getByRole("menuitem", { name: "Hide Box" }));
+  await click(actions("Box"));
+  await expect.element(page.getByRole("menuitem", { name: "Show Box" })).toBeVisible();
+  await click(page.getByRole("menuitem", { name: "Show Box" }));
+  await click(actions("Box"));
+  await expect.element(page.getByRole("menuitem", { name: "Hide Box" })).toBeVisible();
+  await click(page.getByRole("menuitem", { name: "Duplicate Box" }));
   await expect.element(page.getByRole("button", { name: "Box copy", exact: true })).toBeInTheDocument();
-  await click(page.getByRole("button", { name: "Delete Box copy" }));
+  await click(actions("Box copy"));
+  await click(page.getByRole("menuitem", { name: "Delete Box copy" }));
   await expect.element(page.getByRole("button", { name: "Box copy", exact: true })).not.toBeInTheDocument();
   await expect.element(page.getByRole("button", { name: "Box", exact: true })).toBeInTheDocument();
 });
@@ -1409,7 +1413,7 @@ test("retains face selection while mesh operation UI is deferred", async () => {
   await addPrimitive();
   await click(page.getByRole("button", { name: "Face", exact: true }));
   await act(async () => userEvent.click(document.querySelector("canvas")!));
-  await expect.element(page.getByRole("status")).toHaveTextContent("Component selection updated");
+  await expect.element(page.getByRole("status")).toHaveTextContent("Box · Face × 1");
   await expect.element(page.getByRole("combobox", { name: "Operation", exact: true })).not.toBeInTheDocument();
   await expect.element(page.getByRole("button", { name: "Apply operation" })).not.toBeInTheDocument();
   expect(document.querySelectorAll(".property-section")).toHaveLength(1);
@@ -1617,6 +1621,9 @@ test.each(["en", "zh-CN"] as const)(
           .getByRole("dialog", { name: zh ? "删除项目？" : "Delete project?", exact: true })
           .getByRole("button", { name: zh ? "删除" : "Delete", exact: true }),
       );
+      await expect
+        .element(page.getByRole("dialog", { name: zh ? "删除项目？" : "Delete project?", exact: true }))
+        .not.toBeInTheDocument();
       await expect.element(manage(copyName)).not.toBeInTheDocument();
       expect((await store.list()).map((p) => p.id)).toEqual([original!.id]);
       await click(manage("Desk project"));
@@ -1663,6 +1670,7 @@ test.each([
     const callbacks = {
       onOpenChange: vi.fn(),
       onOpenProject: vi.fn(),
+      onNewProject: vi.fn(),
       onDuplicateProject: vi.fn(),
       onRenameProject: vi.fn(async () => true),
       onDeleteProject: vi.fn(async () => true),
@@ -1836,7 +1844,7 @@ test("reports management failures without losing the scene and supports retry", 
   await expect.element(dialog.getByRole("button", { name: "Manage Renamed library", exact: true })).toBeVisible();
   await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
   expect(rename).toHaveBeenCalledTimes(2);
-  expect(document.querySelector(".project-name")!.textContent).toContain("Untitled scene");
+  expect(document.querySelector(".project-name")!.textContent).toContain("Untitled project");
   await click(dialog.getByRole("button", { name: "Manage Renamed library", exact: true }));
   await click(page.getByRole("menuitem", { name: "Delete", exact: true }));
   await click(
@@ -1855,6 +1863,123 @@ test("reports management failures without losing the scene and supports retry", 
   expect(remove).toHaveBeenCalledTimes(2);
   await click(dialog.getByRole("button", { name: "Close projects", exact: true }));
   await expect.element(page.getByRole("button", { name: "Box", exact: true })).toBeVisible();
+});
+
+test.each([
+  { width: 1440, language: "en", theme: "light" },
+  { width: 390, language: "zh-CN", theme: "dark" },
+] as const)(
+  "retains sealed project history after deletion failure and offers explicit cancellation at $width/$language",
+  async ({ width, language, theme }) => {
+    const zh = language === "zh-CN";
+    await page.viewport(width, 900);
+    const store = createLocalProjectStore();
+    const saved = await store.save({ ...emptyDocument(), name: "Retained project" });
+    const repo = new IndexedDBModraRepository({ notifications: false });
+    try {
+      const record = await repo.create(`project:${saved.id}`);
+      const token = await repo.acquire(record.id, record.scopeId);
+      await repo.saveDraft({ text: "History retained until explicit cancellation", assets: [] }, token);
+      await repo.release(token);
+      const remove = vi.spyOn(store, "remove").mockRejectedValueOnce(new LocalProjectStorageError("failed", "Denied"));
+      const detach = vi.spyOn(WorkspaceModelingHost.prototype, "detachScope");
+      await act(async () => {
+        root.unmount();
+        root = createRoot(container);
+        useWorkspaceUiStore.getState().updateDisplayPreferences({ theme, language });
+        root.render(<WorkspaceApp projectStore={store} modraRepository={repo} />);
+      });
+      await click(page.getByRole("button", { name: zh ? "打开项目" : "Open projects", exact: true }));
+      const manager = page.getByRole("dialog", { name: zh ? "项目" : "Projects", exact: true });
+      await click(manager.getByRole("button", { name: zh ? "打开" : "Open", exact: true }));
+      await expect.poll(() => document.querySelector(".project-name")?.textContent).toContain("Retained project");
+      await addPrimitive();
+      await click(page.getByRole("button", { name: zh ? "打开项目" : "Open projects", exact: true }));
+      await click(manager.getByRole("button", { name: /^(Manage |管理 )Retained project$/ }));
+      await click(page.getByRole("menuitem", { name: zh ? "删除" : "Delete", exact: true }));
+      const confirmation = page.getByRole("dialog", { name: zh ? "删除项目？" : "Delete project?", exact: true });
+      await click(confirmation.getByRole("button", { name: zh ? "删除" : "Delete", exact: true }));
+      await expect.element(confirmation.getByRole("alert")).toBeVisible();
+      expect(remove).toHaveBeenCalledOnce();
+      expect(detach).toHaveBeenCalledOnce();
+      expect((await repo.load(record.id))?.draft.text).toBe("History retained until explicit cancellation");
+      expect((await repo.projectDeletions())[0].phase).toBe("remove-failed");
+      await click(confirmation.getByRole("button", { name: zh ? "取消" : "Cancel", exact: true }));
+      const pending = manager.getByRole("region", { name: zh ? "待完成的项目删除" : "Pending project deletion" });
+      await expect.element(pending).toBeVisible();
+      await expect.element(manager.getByRole("button", { name: zh ? "打开" : "Open", exact: true })).toBeDisabled();
+      const bounds = pending.element().getBoundingClientRect();
+      expect(bounds.left).toBeGreaterThanOrEqual(16);
+      expect(bounds.right).toBeLessThanOrEqual(width - 16);
+      expect(pending.element().scrollWidth).toBeLessThanOrEqual(pending.element().clientWidth);
+      await click(
+        pending.getByRole("button", {
+          name: zh ? "取消删除并解锁历史" : "Cancel deletion and unlock history",
+          exact: true,
+        }),
+      );
+      await expect.element(pending).not.toBeInTheDocument();
+      await expect.element(manager.getByRole("button", { name: zh ? "打开" : "Open", exact: true })).toBeEnabled();
+      expect(await repo.projectDeletions()).toEqual([]);
+      expect((await repo.load(record.id))?.draft.text).toBe("History retained until explicit cancellation");
+      await click(manager.getByRole("button", { name: zh ? "关闭项目" : "Close projects", exact: true }));
+      if (width < 1000)
+        await click(
+          page
+            .getByRole("navigation", { name: zh ? "工作区面板" : "Workspace panels" })
+            .getByRole("button", { name: zh ? "物体" : "Objects", exact: true }),
+        );
+      await expect.element(page.getByRole("button", { name: zh ? "立方体" : "Box", exact: true })).toBeVisible();
+    } finally {
+      await repo.close();
+    }
+  },
+);
+
+test("shows retryable Modra cleanup after the project row has already been removed", async () => {
+  const store = createLocalProjectStore();
+  const saved = await store.save({ ...emptyDocument(), name: "Cleanup project" });
+  const repo = new IndexedDBModraRepository({ notifications: false });
+  try {
+    const record = await repo.create(`project:${saved.id}`);
+    const cleanup = vi.spyOn(repo, "completeProjectDeletion").mockRejectedValueOnce(new Error("Cleanup failed"));
+    const remove = vi.spyOn(store, "remove");
+    await act(async () => {
+      root.unmount();
+      root = createRoot(container);
+      root.render(<WorkspaceApp projectStore={store} modraRepository={repo} />);
+    });
+    await click(page.getByRole("button", { name: "Open projects", exact: true }));
+    const manager = page.getByRole("dialog", { name: "Projects", exact: true });
+    await click(manager.getByRole("button", { name: "Manage Cleanup project", exact: true }));
+    await click(page.getByRole("menuitem", { name: "Delete", exact: true }));
+    const confirmation = page.getByRole("dialog", { name: "Delete project?", exact: true });
+    await click(confirmation.getByRole("button", { name: "Delete", exact: true }));
+    await expect.element(confirmation.getByRole("alert")).toBeVisible();
+    expect(await store.list()).toEqual([]);
+    expect((await repo.projectDeletions())[0].phase).toBe("removed");
+    await click(confirmation.getByRole("button", { name: "Cancel", exact: true }));
+    await click(manager.getByRole("button", { name: "Close projects", exact: true }));
+    await click(page.getByRole("button", { name: "Open projects", exact: true }));
+    const pending = manager.getByRole("region", { name: "Pending project deletion", exact: true });
+    await expect
+      .element(
+        pending.getByText("The project was removed. Its Modra data is sealed; retry to finish local cleanup.", {
+          exact: true,
+        }),
+      )
+      .toBeVisible();
+    await expect
+      .element(pending.getByRole("button", { name: "Cancel deletion and unlock history", exact: true }))
+      .not.toBeInTheDocument();
+    await click(pending.getByRole("button", { name: "Retry deletion", exact: true }));
+    await expect.element(pending).not.toBeInTheDocument();
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(remove).toHaveBeenCalledOnce();
+    expect(await repo.load(record.id)).toBeNull();
+  } finally {
+    await repo.close();
+  }
 });
 
 test("keeps stored project data intact on invalid or missing management operations", async () => {
@@ -1884,7 +2009,7 @@ test("saves locally and recovers the project after the workspace remounts", asyn
   await click(page.getByRole("button", { name: "Save", exact: true }));
   await expect.poll(() => document.querySelector(".save-state")?.textContent).toBe("Saved");
   expect(document.querySelector(".context-copy")!.textContent).not.toContain("saved");
-  await expect.element(page.getByRole("status")).toHaveTextContent("");
+  await expect.element(page.getByRole("status")).toHaveTextContent("Box");
 
   await act(async () => root.unmount());
   container.remove();
@@ -1900,7 +2025,7 @@ test("saves locally and recovers the project after the workspace remounts", asyn
   await click(page.getByRole("button", { name: "Open projects" }));
   await expect.element(page.getByRole("dialog", { name: "Projects" })).toBeInTheDocument();
   await expect
-    .element(page.getByRole("dialog", { name: "Projects" }).getByText("Untitled scene", { exact: true }))
+    .element(page.getByRole("dialog", { name: "Projects" }).getByText("Untitled project", { exact: true }))
     .toBeInTheDocument();
   await click(page.getByRole("button", { name: "Open", exact: true }));
   await expect.element(page.getByRole("button", { name: "Box", exact: true })).toBeInTheDocument();
@@ -2076,7 +2201,7 @@ test.each([
   await expect.element(page.getByRole("button", { name: "Exchange box", exact: true })).toBeInTheDocument();
   await expect
     .element(page.getByRole("status"))
-    .toHaveTextContent("Untitled scene imported. Save it to this browser or export a portable copy.");
+    .toHaveTextContent("Untitled project imported. Save it to this browser or export a portable copy.");
   await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
 });
 
@@ -2158,7 +2283,7 @@ test.each([
   async function expectChrome(name: string, compactTitle = false) {
     const dialog = page.getByRole("dialog", { name, exact: true });
     await expect.element(dialog).toBeVisible();
-    const element = dialog.element();
+    const element = dialog.element().querySelector<HTMLElement>(".ai-settings-dialog") ?? dialog.element();
     const style = getComputedStyle(element);
     expect(style.borderTopWidth).toBe("1px");
     modalRadius ??= style.borderRadius;
@@ -2193,22 +2318,15 @@ test.each([
   await click(page.getByRole("menuitem", { name: zh ? "删除" : "Delete", exact: true }));
   const remove = await expectChrome(zh ? "删除项目？" : "Delete project?");
   await expect
-    .element(
-      remove.getByText(
-        zh ? "删除后无法恢复，请谨慎操作。" : "Deletion cannot be undone. Please proceed with caution.",
-        { exact: true },
-      ),
-    )
+    .element(remove.getByText(projects[language as keyof typeof projects].deleteDescription, { exact: true }))
     .toBeVisible();
   await click(page.getByRole("button", { name: zh ? "取消" : "Cancel", exact: true }));
   await click(page.getByRole("button", { name: zh ? "关闭项目" : "Close projects", exact: true }));
   await openAISettings();
   const settings = await expectChrome(zh ? "AI 服务设置" : "AI provider settings");
-  await expect
-    .element(settings.getByText(zh ? "本地配置与请求隐私" : "Local settings and request privacy", { exact: true }))
-    .toBeVisible();
+  await expect.element(settings.getByText(ai[language].credentialSummary, { exact: true })).toBeVisible();
   await click(page.getByRole("button", { name: zh ? "关闭 AI 服务设置" : "Close AI provider settings", exact: true }));
-  await click(page.getByRole("button", { name: zh ? "关闭 AI 对话" : "Close AI chat", exact: true }));
+  await click(page.getByRole("button", { name: zh ? "关闭 Modra" : "Close Modra", exact: true }));
   await addPrimitive("cylinder");
   await act(async () =>
     userEvent.upload(
@@ -2237,7 +2355,7 @@ test.each([
     const transform = document.querySelector(".transform-tools")!.getBoundingClientRect();
     expect(quick.height).toBe(transform.height);
     if (width > 600) expect(quick.top).toBe(transform.top);
-    const launcher = page.getByRole("button", { name: zh ? "AI 对话" : "AI chat", exact: true });
+    const launcher = page.getByRole("button", { name: zh ? "Modra" : "Modra", exact: true });
     expect(launcher.element().getBoundingClientRect().width).toBe(44);
     expect(launcher.element().getBoundingClientRect().height).toBe(44);
     await click(launcher);
@@ -2263,9 +2381,7 @@ test.each([
     await click(dialog.getByRole("button", { name: zh ? "保存" : "Save", exact: true }));
     expect(loadAIProviderSettings()?.apiKey).toBe("test-key");
     await expect.element(dialog).not.toBeInTheDocument();
-    await expect
-      .element(page.getByRole("region", { name: zh ? "AI 对话" : "AI conversation", exact: true }))
-      .toBeVisible();
+    await expect.element(page.getByRole("region", { name: zh ? "Modra" : "Modra", exact: true })).toBeVisible();
     await openAISettings();
     await expect
       .element(dialog.getByRole("textbox", { name: "URL", exact: true }))
@@ -2278,7 +2394,7 @@ test.each([
       protocol: "openai-compatible",
       baseURL: "https://models.example.test/v1",
       modelId: "test-model",
-      apiKey: undefined,
+      route: "direct",
     });
     expect(dialog.element().querySelector('[role="status"]')).toBeNull();
   },
@@ -2304,12 +2420,13 @@ test("validates provider settings by field and saves usable configuration locall
   await expect.element(dialog).not.toBeInTheDocument();
   expect(loadAIProviderSettings()).toEqual({
     protocol: "openai-compatible",
+    route: "direct",
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
-    apiKey: undefined,
   });
   await openAISettings();
-  await expect.element(dialog.getByText(/Please ensure your current environment is secure/)).toBeInTheDocument();
+  await click(dialog.getByRole("button", { name: ai.en.credentialSummary, exact: true }));
+  await expect.element(dialog.getByText(ai.en.credentialNotice, { exact: true })).toBeVisible();
 });
 
 test.each(["en", "zh-CN"] as const)(
@@ -2319,6 +2436,7 @@ test.each(["en", "zh-CN"] as const)(
     const zh = language === "zh-CN";
     const original = {
       protocol: "openai-compatible" as const,
+      route: "direct" as const,
       baseURL: "https://old.example.test/v1",
       modelId: "old-model",
     };
@@ -2339,15 +2457,13 @@ test.each(["en", "zh-CN"] as const)(
     await click(dialog.getByRole("button", { name: zh ? "保存" : "Save", exact: true }));
     await expect.element(dialog).not.toBeInTheDocument();
     expect(loadAIProviderSettings()).toEqual({ ...original, modelId: "new-model" });
-    await expect
-      .element(page.getByRole("region", { name: zh ? "AI 对话" : "AI conversation", exact: true }))
-      .toBeVisible();
+    await expect.element(page.getByRole("region", { name: zh ? "Modra" : "Modra", exact: true })).toBeVisible();
   },
 );
 
 test("directs unconfigured AI prompts to provider settings without sending a request", async () => {
-  const fetchMock = vi.spyOn(globalThis, "fetch");
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  const fetchMock = mockModelFetch();
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   expect(document.querySelector(".ai-endpoint-disclosure")).toBeNull();
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a cube"));
   await click(page.getByRole("button", { name: "Send prompt" }));
@@ -2362,7 +2478,7 @@ test.each(["en", "zh-CN"] as const)("selects approval modes with compact control
   );
   await page.viewport(390, 844);
   const zh = language === "zh-CN";
-  await click(page.getByRole("button", { name: zh ? "AI 对话" : "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: zh ? "Modra" : "Modra", exact: true }));
   const mode = page.getByRole("button", { name: zh ? "批准模式" : "Approval mode", exact: true });
   await expect.element(mode).toHaveTextContent(zh ? "请求批准" : "Request approval");
   await click(mode);
@@ -2386,8 +2502,7 @@ test("automatically approves consecutive modeling batches and preserves undo his
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(
       chatToolCallResponse("top", "command_scene_createPrimitive", { primitive: "box", name: "Table top" }),
     )
@@ -2397,7 +2512,7 @@ test("automatically approves consecutive modeling batches and preserves undo his
     )
     .mockResolvedValueOnce(chatTextResponse("leg-summary", "The table leg is ready."))
     .mockResolvedValueOnce(chatTextResponse("complete", "The table is complete."));
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   await click(page.getByRole("button", { name: "Approval mode", exact: true }));
   await click(page.getByRole("menuitemradio", { name: "Auto-approve", exact: true }));
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build a table"));
@@ -2421,7 +2536,7 @@ test("retains a failed automatic batch for manual review without applying it", a
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  vi.spyOn(globalThis, "fetch")
+  mockModelFetch()
     .mockResolvedValueOnce(
       chatToolCallResponse("failed-batch", "command_scene_createPrimitive", {
         primitive: "box",
@@ -2429,7 +2544,7 @@ test("retains a failed automatic batch for manual review without applying it", a
       }),
     )
     .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }));
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   await click(page.getByRole("button", { name: "Approval mode", exact: true }));
   await click(page.getByRole("menuitemradio", { name: "Auto-approve", exact: true }));
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a box"));
@@ -2462,17 +2577,15 @@ test.each([
       modelId: "test-model",
     });
     const setDocument = vi.spyOn(ThreeViewport.prototype, "setDocument");
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(
-        chatToolCallResponse("valid-part", "command_scene_createPrimitive", { primitive: "box", name: "Partial box" }),
-      );
+    const fetchMock = mockModelFetch().mockResolvedValueOnce(
+      chatToolCallResponse("valid-part", "command_scene_createPrimitive", { primitive: "box", name: "Partial box" }),
+    );
     if (failure === "network") fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     else
       fetchMock.mockResolvedValue(
         chatToolCallResponse("invalid-part", "command_scene_createPrimitive", { primitive: "torus" }),
       );
-    await click(page.getByRole("button", { name: zh ? "AI 对话" : "AI chat", exact: true }));
+    await click(page.getByRole("button", { name: zh ? "Modra" : "Modra", exact: true }));
     if (mode === "auto") {
       await click(page.getByRole("button", { name: zh ? "批准模式" : "Approval mode", exact: true }));
       await click(page.getByRole("menuitemradio", { name: zh ? "自动批准" : "Auto-approve", exact: true }));
@@ -2505,7 +2618,9 @@ test.each([
     await act(async () =>
       userEvent.fill(page.getByRole("textbox", { name: zh ? "消息" : "Message", exact: true }), "Continue modeling"),
     );
-    await expect.element(send).toBeDisabled();
+    await expect
+      .element(page.getByRole("button", { name: zh ? "加入待发送" : "Queue prompt", exact: true }))
+      .toBeEnabled();
     const callsBeforeDecision = fetchMock.mock.calls.length;
     const keep = action === "keep";
     await click(
@@ -2525,7 +2640,7 @@ test.each([
       expect(document.querySelectorAll(".object-row")).toHaveLength(1);
       expect(document.querySelector(".object-row")?.textContent).toContain("Partial box");
       await expect.element(undo).toBeEnabled();
-      await click(page.getByRole("button", { name: zh ? "关闭 AI 对话" : "Close AI chat", exact: true }));
+      await click(page.getByRole("button", { name: zh ? "关闭 Modra" : "Close Modra", exact: true }));
       await click(undo);
     } else {
       await expect.element(undo).toBeDisabled();
@@ -2543,8 +2658,7 @@ test.each(["keep", "discard"] as const)(
       baseURL: "https://models.example.test/v1",
       modelId: "test-model",
     });
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
+    const fetchMock = mockModelFetch()
       .mockResolvedValueOnce(
         chatToolCallResponse("first-batch", "command_scene_createPrimitive", { primitive: "box", name: "Applied box" }),
       )
@@ -2556,7 +2670,7 @@ test.each(["keep", "discard"] as const)(
         }),
       )
       .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }));
-    await click(page.getByRole("button", { name: "AI chat", exact: true }));
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
     await click(page.getByRole("button", { name: "Approval mode", exact: true }));
     await click(page.getByRole("menuitemradio", { name: "Auto-approve", exact: true }));
     await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build a box and a sphere"));
@@ -2589,12 +2703,11 @@ test.each(["request", "auto"] as const)(
       baseURL: "https://models.example.test/v1",
       modelId: "test-model",
     });
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
+    const fetchMock = mockModelFetch()
       .mockResolvedValueOnce(chatToolCallResponse("box", "command_scene_createPrimitive", { primitive: "box" }))
       .mockResolvedValueOnce(chatTextResponse("summary", ""))
       .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }));
-    await click(page.getByRole("button", { name: "AI chat", exact: true }));
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
     if (mode === "auto") {
       await click(page.getByRole("button", { name: "Approval mode", exact: true }));
       await click(page.getByRole("menuitemradio", { name: "Auto-approve", exact: true }));
@@ -2619,13 +2732,13 @@ test.each(["request", "auto"] as const)(
   },
 );
 
-test("pauses automatic approval after 20 batches instead of looping indefinitely", async () => {
+test("pauses automatic approval after 20 batches without requesting a 21st", async () => {
   saveAIProviderSettings({
     protocol: "openai-compatible",
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi.spyOn(globalThis, "fetch");
+  const fetchMock = mockModelFetch();
   for (let index = 0; index < 21; index++) {
     fetchMock.mockResolvedValueOnce(
       chatToolCallResponse(`batch-${index}`, "command_scene_createPrimitive", {
@@ -2635,7 +2748,7 @@ test("pauses automatic approval after 20 batches instead of looping indefinitely
     );
     fetchMock.mockResolvedValueOnce(chatTextResponse(`summary-${index}`, `Batch ${index} ready.`));
   }
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   await click(page.getByRole("button", { name: "Approval mode", exact: true }));
   await click(page.getByRole("menuitemradio", { name: "Auto-approve", exact: true }));
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build many boxes"));
@@ -2643,9 +2756,9 @@ test("pauses automatic approval after 20 batches instead of looping indefinitely
   await expect
     .element(page.getByRole("alert"))
     .toHaveTextContent("Automatic approval paused after 20 batches. Review the scene before continuing.");
-  expect(fetchMock).toHaveBeenCalledTimes(42);
+  expect(fetchMock).toHaveBeenCalledTimes(40);
   expect(document.querySelectorAll(".object-row")).toHaveLength(20);
-  await expect.element(page.getByRole("button", { name: "Accept changes", exact: true })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Accept changes", exact: true })).not.toBeInTheDocument();
 });
 
 test("cancels an automatic continuation without undoing applied batches or applying incomplete ones", async () => {
@@ -2658,21 +2771,20 @@ test("cancels an automatic continuation without undoing applied batches or apply
   const continuation = new Promise<Response>((resolve) => {
     resolveContinuation = resolve;
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(
       chatToolCallResponse("first", "command_scene_createPrimitive", { primitive: "box", name: "Approved box" }),
     )
     .mockResolvedValueOnce(chatTextResponse("first-summary", "First batch ready."))
     .mockReturnValueOnce(continuation);
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   await click(page.getByRole("button", { name: "Approval mode", exact: true }));
   await click(page.getByRole("menuitemradio", { name: "Auto-approve", exact: true }));
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build two boxes"));
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.poll(() => fetchMock.mock.calls.length).toBe(3);
   await expect.element(page.getByRole("button", { name: "Approved box", exact: true })).toBeVisible();
-  await expect.element(page.getByRole("button", { name: "Approval mode", exact: true })).toBeDisabled();
+  await expect.element(page.getByRole("button", { name: "Approval mode", exact: true })).toBeEnabled();
   await click(page.getByRole("button", { name: "Cancel request", exact: true }));
   await act(async () => resolveContinuation(chatTextResponse("late", "Late response")));
   await expect.element(page.getByText("Request cancelled", { exact: true })).toBeVisible();
@@ -2704,33 +2816,38 @@ test("previews and removes multiple images, sends them to the provider and retai
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(chatTextResponse("images", "I see two views."))
     .mockResolvedValueOnce(chatTextResponse("followup", "I will use those views."));
   await page.viewport(390, 844);
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   const files = [referenceImage("front.png"), referenceImage("side.png"), referenceImage("remove.png")];
   await act(async () => userEvent.upload(page.getByTestId("ai-image-input"), files));
   await expect.element(page.getByRole("button", { name: "Remove remove.png", exact: true })).toBeVisible();
   await click(page.getByRole("button", { name: "Remove remove.png", exact: true }));
   expect(document.querySelectorAll(".ai-prompt-form img")).toHaveLength(2);
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Model these views"));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Model these views");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("I see two views.", { exact: true })).toBeVisible();
   expect(document.querySelectorAll(".ai-prompt-form img")).toHaveLength(0);
   expect(document.querySelectorAll(".ai-message img")).toHaveLength(2);
-  const sent = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).messages[0];
+  const sent = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).messages.find(
+    (message: { role: string }) => message.role === "user",
+  );
   expect(sent.content[0]).toEqual({ type: "text", text: "Model these views" });
   expect(sent.content).toHaveLength(3);
   expect(sent.content.slice(1)).toEqual([
     { type: "image_url", image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
     { type: "image_url", image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
   ]);
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Continue"));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Continue");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("I will use those views.", { exact: true })).toBeVisible();
-  expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string).messages[0]).toEqual(sent);
+  expect(
+    JSON.parse(fetchMock.mock.calls[1]![1]!.body as string).messages.find(
+      (message: { role: string }) => message.role === "user",
+    ),
+  ).toEqual(sent);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
 });
 
@@ -2740,11 +2857,10 @@ test("restores image-only prompts after failure and resends their attachments", 
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
     .mockResolvedValueOnce(chatTextResponse("retry-images", "I can model this image."));
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   await act(async () => userEvent.upload(page.getByTestId("ai-image-input"), referenceImage("reference.png")));
   await expect.element(page.getByRole("button", { name: "Send prompt" })).toBeEnabled();
   await click(page.getByRole("button", { name: "Send prompt" }));
@@ -2754,21 +2870,22 @@ test("restores image-only prompts after failure and resends their attachments", 
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("I can model this image.", { exact: true })).toBeVisible();
   const body = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string);
-  expect(body.messages[0].content).toEqual(body.messages[1].content);
-  expect(body.messages[1].content[0].type).toBe("image_url");
+  const userMessages = body.messages.filter((message: { role: string }) => message.role === "user");
+  expect(userMessages[0].content).toEqual(userMessages[1].content);
+  expect(userMessages[1].content[0].type).toBe("image_url");
 });
 
 test("rejects too many, oversized and invalid image files without sending a request", async () => {
-  const fetchMock = vi.spyOn(globalThis, "fetch");
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  const fetchMock = mockModelFetch();
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   const input = page.getByTestId("ai-image-input");
   await act(async () =>
     userEvent.upload(
       input,
-      Array.from({ length: 7 }, (_, index) => referenceImage(`${index}.png`)),
+      Array.from({ length: 6 }, (_, index) => referenceImage(`${index}.png`)),
     ),
   );
-  await expect.element(page.getByRole("alert")).toHaveTextContent("Attach up to 6 images per message.");
+  await expect.element(page.getByRole("alert")).toHaveTextContent("Attach up to 5 images per message.");
   await act(async () =>
     userEvent.upload(input, new File([new Uint8Array(5 * 1024 * 1024 + 1)], "large.png", { type: "image/png" })),
   );
@@ -2791,7 +2908,7 @@ test("cancels an in-flight request without applying unconfirmed edits", async ()
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+  const fetchMock = mockModelFetch().mockImplementation(
     (_input, init) =>
       new Promise((_resolve, reject) => {
         init?.signal?.addEventListener(
@@ -2802,13 +2919,13 @@ test("cancels an in-flight request without applying unconfirmed edits", async ()
       }),
   );
 
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a box"));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Add a box");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await click(page.getByRole("button", { name: "Cancel request" }));
 
   await expect
-    .element(page.getByRole("region", { name: "AI conversation", exact: true }).getByRole("status").last())
+    .element(page.getByRole("region", { name: "Modra", exact: true }).getByRole("status").last())
     .toHaveTextContent("Request cancelled");
   expect(document.querySelectorAll(".ai-message")).toHaveLength(1);
   expect(document.querySelectorAll(".object-row")).toHaveLength(0);
@@ -2837,22 +2954,23 @@ test("retains streamed assistant text after cancellation and includes it in the 
       );
     },
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(new Response(stream, { headers: { "content-type": "text/event-stream" } }))
     .mockResolvedValueOnce(chatTextResponse("continue", "Continuing the table."));
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build a table"));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Build a table");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText(partial, { exact: true })).toBeVisible();
   await click(page.getByRole("button", { name: "Cancel request" }));
   await expect.element(page.getByText("Request cancelled", { exact: true })).toBeVisible();
   await expect.element(page.getByText(partial, { exact: true })).toBeVisible();
   expect(document.querySelectorAll(".object-row")).toHaveLength(0);
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Continue"));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Continue");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("Continuing the table.", { exact: true })).toBeVisible();
-  expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string).messages).toEqual([
+  const continuedMessages = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string).messages;
+  expect(continuedMessages[0]).toEqual({ role: "system", content: expect.stringContaining("fresh bounded hierarchy") });
+  expect(continuedMessages.slice(1)).toEqual([
     { role: "user", content: "Build a table" },
     { role: "assistant", content: partial },
     { role: "user", content: "Continue" },
@@ -2865,7 +2983,7 @@ test("automatically scrolls long modeling proposals without a request destinatio
     baseURL: `https://models.example.test/${"long-endpoint/".repeat(12)}v1`,
     modelId: "test-model",
   });
-  const fetchMock = vi.spyOn(globalThis, "fetch");
+  const fetchMock = mockModelFetch();
   for (let index = 0; index < 8; index++) {
     fetchMock.mockResolvedValueOnce(
       chatToolCallResponse(`box-${index}`, "command_scene_createPrimitive", {
@@ -2876,15 +2994,19 @@ test("automatically scrolls long modeling proposals without a request destinatio
   }
   fetchMock.mockResolvedValueOnce(chatTextResponse("ready", "All components are ready."));
   await page.viewport(390, 844);
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   expect(document.querySelector(".ai-endpoint-disclosure")).toBeNull();
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build a table"));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Build a table");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("Response complete", { exact: true })).toBeInTheDocument();
-  const list = document.querySelector<HTMLElement>("[data-ai-proposals]")!;
-  expect(list.children).toHaveLength(8);
-  expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
-  expect(list.scrollHeight - list.clientHeight - list.scrollTop).toBeLessThanOrEqual(1);
+  const lists = document.querySelectorAll<HTMLElement>("[data-ai-proposals]");
+  expect(document.querySelectorAll("[data-ai-proposals] li")).toHaveLength(8);
+  // Commands now stay in response order, rather than a separately scrolling aggregate.
+  expect(lists).toHaveLength(8);
+  for (const list of lists) expect(list.scrollHeight).toBe(list.clientHeight);
+  const parts = document.querySelectorAll<HTMLElement>("[data-message-part]");
+  expect(parts[parts.length - 1]?.dataset.messagePart).toBe("text");
+  expect(parts[parts.length - 1]?.textContent).toBe("All components are ready.");
   const transcript = document.querySelector<HTMLElement>(".ai-transcript")!;
   expect(transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop).toBeLessThanOrEqual(1);
 });
@@ -2895,8 +3017,7 @@ test("previews a multi-step AI model operation on the canvas until accepted", as
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(
       chatToolCallResponse("create-table", "command_scene_createPrimitive", {
         primitive: "box",
@@ -2906,8 +3027,8 @@ test("previews a multi-step AI model operation on the canvas until accepted", as
     .mockResolvedValueOnce(chatTextResponse("table-summary", "The table is ready for review."))
     .mockResolvedValueOnce(chatTextResponse("table-complete", "The table task is complete."));
 
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build a table."));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Build a table.");
   await click(page.getByRole("button", { name: "Send prompt" }));
 
   await expect.element(page.getByText("The table is ready for review.")).toBeInTheDocument();
@@ -2931,8 +3052,7 @@ test("continues an approved modeling task and stops when the user rejects a late
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(
       chatToolCallResponse("table-top", "command_scene_createPrimitive", {
         primitive: "box",
@@ -2948,8 +3068,8 @@ test("continues an approved modeling task and stops when the user rejects a late
     )
     .mockResolvedValueOnce(chatTextResponse("table-legs-summary", "The table structure is ready."));
 
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build a table."));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Build a table.");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await click(page.getByRole("button", { name: "Accept changes" }));
 
@@ -2959,7 +3079,7 @@ test("continues an approved modeling task and stops when the user rejects a late
     .element(nextProposal.getByText("Previewing 1 proposed change on the canvas", { exact: true }))
     .toBeInTheDocument();
   await expect.element(page.getByRole("button", { name: "Table leg", exact: true })).not.toBeInTheDocument();
-  expect(fetchMock).toHaveBeenCalledTimes(4);
+  await expect.poll(() => fetchMock.mock.calls.length).toBe(4);
   const [, continuationInit] = fetchMock.mock.calls[2]!;
   const continuationBody = JSON.parse(continuationInit?.body as string);
   expect(continuationBody.messages.at(-1).content).toContain("Continue the original modeling task");
@@ -2978,12 +3098,12 @@ test("rejecting an AI proposal removes the canvas preview without changing the s
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  vi.spyOn(globalThis, "fetch")
+  mockModelFetch()
     .mockResolvedValueOnce(chatToolCallResponse("create-box", "command_scene_createPrimitive", { primitive: "box" }))
     .mockResolvedValueOnce(chatTextResponse("box-summary", "A box is ready for review."));
 
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a box."));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Add a box.");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("AI preview · not applied")).toBeInTheDocument();
   await click(page.getByRole("button", { name: "Reject" }));
@@ -3008,12 +3128,11 @@ test.each(["en", "zh-CN"] as const)(
     const retry = new Promise<Response>((resolve) => {
       resolveRetry = resolve;
     });
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
+    const fetchMock = mockModelFetch()
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
       .mockReturnValueOnce(retry);
-    await click(page.getByRole("button", { name: zh ? "AI 对话" : "AI chat", exact: true }));
-    await act(async () => userEvent.fill(page.getByRole("textbox", { name: zh ? "消息" : "Message" }), "Make a chair"));
+    await click(page.getByRole("button", { name: zh ? "Modra" : "Modra", exact: true }));
+    await fill(page.getByRole("textbox", { name: zh ? "消息" : "Message" }), "Make a chair");
     await click(page.getByRole("button", { name: zh ? "发送提示词" : "Send prompt" }));
     await expect
       .element(page.getByText(zh ? "连接中断，正在重连 1/5…" : "Connection lost. Reconnecting 1/5…", { exact: true }))
@@ -3038,11 +3157,11 @@ test("stops after five connection retries and restores an unanswered prompt with
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  const fetchMock = mockModelFetch().mockRejectedValue(new TypeError("Failed to fetch"));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   await act(async () => userEvent.upload(page.getByTestId("ai-image-input"), referenceImage("reference.png")));
   await expect.element(page.getByRole("button", { name: "Remove reference.png", exact: true })).toBeVisible();
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Model this view"));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Model this view");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("Request failed", { exact: true })).toBeVisible();
   expect(fetchMock).toHaveBeenCalledTimes(6);
@@ -3061,12 +3180,9 @@ test("cancels automatic reconnecting without starting another retry or leaving a
   const retry = new Promise<Response>((resolve) => {
     resolveRetry = resolve;
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
-    .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-    .mockReturnValueOnce(retry);
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Make a chair"));
+  const fetchMock = mockModelFetch().mockRejectedValueOnce(new TypeError("Failed to fetch")).mockReturnValueOnce(retry);
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Make a chair");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("Connection lost. Reconnecting 1/5…", { exact: true })).toBeVisible();
   await click(page.getByRole("button", { name: "Cancel request", exact: true }));
@@ -3093,13 +3209,13 @@ test.each([
       baseURL: "https://models.example.test/v1",
       modelId: "test-model",
     });
-    vi.spyOn(globalThis, "fetch")
+    mockModelFetch()
       .mockResolvedValueOnce(
         chatToolCallResponse("box", "command_scene_createPrimitive", { primitive: "box", name: "Tool preview box" }),
       )
       .mockResolvedValueOnce(chatToolCallResponse("inspect", "query_scene_getHierarchy", { limit: 20 }))
       .mockResolvedValueOnce(chatTextResponse("summary", "Ready for review"));
-    await click(page.getByRole("button", { name: zh ? "AI 对话" : "AI chat", exact: true }));
+    await click(page.getByRole("button", { name: zh ? "Modra" : "Modra", exact: true }));
     await act(async () =>
       userEvent.fill(page.getByRole("textbox", { name: zh ? "消息" : "Message" }), "Create and inspect a box"),
     );
@@ -3138,11 +3254,11 @@ test.each(["cancel", "disconnect"] as const)(
         controller = value;
       },
     });
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(stream, { headers: { "content-type": "text/event-stream" } }));
-    await click(page.getByRole("button", { name: "AI chat", exact: true }));
-    await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Create a box"));
+    const fetchMock = mockModelFetch().mockResolvedValueOnce(
+      new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+    );
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    await fill(page.getByRole("textbox", { name: "Message" }), "Create a box");
     await click(page.getByRole("button", { name: "Send prompt" }));
     await act(async () =>
       controller.enqueue(
@@ -3195,11 +3311,11 @@ test("keeps failed tool details visible with no loading indicator", async () => 
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
-    .mockResolvedValueOnce(chatToolCallResponse("invalid", "command_scene_createPrimitive", { primitive: "torus" }));
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Create a torus"));
+  const fetchMock = mockModelFetch().mockResolvedValueOnce(
+    chatToolCallResponse("invalid", "command_scene_createPrimitive", { primitive: "torus" }),
+  );
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Create a torus");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("Request failed", { exact: true })).toBeVisible();
   expect(document.querySelectorAll('[data-tool-status="failed"]')).toHaveLength(1);
@@ -3218,8 +3334,7 @@ test("recovers from provider authentication errors and keeps the prompt availabl
     modelId: "test-model",
     apiKey: "invalid-key",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "Unauthorized" } }), { status: 401 }))
     .mockResolvedValueOnce(
       new Response(
@@ -3232,8 +3347,8 @@ test("recovers from provider authentication errors and keeps the prompt availabl
       ),
     );
 
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a box"));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Add a box");
   await click(page.getByRole("button", { name: "Send prompt" }));
 
   await expect
@@ -3255,15 +3370,17 @@ test("removes empty failed assistant replies and only loads the active reply on 
   const retry = new Promise<Response>((resolve) => {
     resolveRetry = resolve;
   });
-  vi.spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
     .mockResolvedValueOnce(new Response("Unauthorized", { status: 401 }))
     .mockReturnValueOnce(retry);
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a box"));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Add a box");
   for (let attempt = 0; attempt < 2; attempt++) {
     await click(page.getByRole("button", { name: "Send prompt" }));
+    await expect.poll(() => fetchMock.mock.calls.length).toBe(attempt + 1);
     await expect.element(page.getByText("Request failed", { exact: true })).toBeVisible();
+    await expect.element(page.getByRole("button", { name: "Send prompt" })).toBeEnabled();
     expect(document.querySelectorAll(".ai-message")).toHaveLength(attempt + 1);
     expect(document.querySelectorAll(".ai-message .animate-spin")).toHaveLength(0);
   }
@@ -3278,10 +3395,12 @@ test("removes empty failed assistant replies and only loads the active reply on 
   expect(document.querySelectorAll(".ai-message .animate-spin")).toHaveLength(0);
 });
 
-test.each([
-  { label: "partial", text: "I started building the table." },
-  { label: "whitespace-only", text: "  \n " },
-])("handles a failed $label reply without reviving it on retry", async ({ text }) => {
+test.each(
+  (["request", "auto"] as const).flatMap((mode) => [
+    { mode, label: "partial", text: "I started building the table." },
+    { mode, label: "whitespace-only", text: "  \n " },
+  ]),
+)("handles a failed $label reply in $mode mode without reviving it on retry", async ({ text, mode }) => {
   saveAIProviderSettings({
     protocol: "openai-compatible",
     baseURL: "https://models.example.test/v1",
@@ -3297,16 +3416,19 @@ test.each([
   const retry = new Promise<Response>((resolve) => {
     resolveRetry = resolve;
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(new Response(stream, { headers: { "content-type": "text/event-stream" } }))
     .mockReturnValueOnce(retry);
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  if (mode === "auto") {
+    await click(page.getByRole("button", { name: "Approval mode", exact: true }));
+    await click(page.getByRole("menuitemradio", { name: "Auto-approve", exact: true }));
+  }
   await act(async () =>
     userEvent.upload(page.getByTestId("ai-image-input"), [referenceImage("front.png"), referenceImage("side.png")]),
   );
   await expect.element(page.getByRole("button", { name: "Remove side.png", exact: true })).toBeVisible();
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Build a table"));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Build a table");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await act(async () => {
     controller.enqueue(
@@ -3331,7 +3453,7 @@ test.each([
   expect(document.querySelectorAll(".ai-message img")).toHaveLength(2);
   if (text.trim()) {
     await expect.element(page.getByRole("button", { name: "Send prompt" })).toBeDisabled();
-    await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Continue the table"));
+    await fill(page.getByRole("textbox", { name: "Message" }), "Continue the table");
   }
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByRole("button", { name: "Cancel request", exact: true })).toBeVisible();
@@ -3339,9 +3461,12 @@ test.each([
   expect(document.querySelectorAll(".ai-message .animate-spin")).toHaveLength(1);
   expect(document.querySelector(".ai-message:last-child .animate-spin")).not.toBeNull();
   if (text.trim()) await expect.element(page.getByText(text, { exact: true })).toBeVisible();
+  await expect.poll(() => fetchMock.mock.calls.length).toBe(2);
   const history = JSON.parse(fetchMock.mock.calls[1]![1]!.body as string).messages;
-  const original = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).messages[0];
-  expect(history[0]).toEqual(original);
+  const original = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string).messages.find(
+    (message: { role: string }) => message.role === "user",
+  );
+  expect(history.find((message: { role: string }) => message.role === "user")).toEqual(original);
   expect(history.at(-1).content).toEqual(text.trim() ? "Continue the table" : original.content);
   expect(history.filter((message: { role: string }) => message.role === "assistant")).toEqual(
     text.trim() ? [{ role: "assistant", content: text }] : [],
@@ -3349,6 +3474,48 @@ test.each([
   await act(async () => resolveRetry(chatTextResponse("retry", "The table is ready.")));
   await expect.element(page.getByText("Response complete", { exact: true })).toBeVisible();
   expect(document.querySelectorAll(".ai-message .animate-spin")).toHaveLength(0);
+});
+
+test("a late cancelled-request failure never replaces a newer text and image draft", async () => {
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example.test/v1",
+    modelId: "test-model",
+  });
+  const stream = controlledChatResponse("cancelled-draft");
+  let rejectLate!: (error: Error) => void;
+  const pending = new Promise<Response>((_, reject) => {
+    rejectLate = reject;
+  });
+  const fetchMock = mockModelFetch()
+    .mockResolvedValueOnce(stream.response)
+    .mockReturnValueOnce(pending)
+    .mockResolvedValueOnce(chatTextResponse("new-draft", "Using your new draft."));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  const composer = page.getByRole("textbox", { name: "Message", exact: true });
+  await fill(composer, "Original task");
+  await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+  await act(async () => stream.text("Original partial response"));
+  await expect.element(page.getByText("Original partial response", { exact: true })).toBeVisible();
+  await click(page.getByRole("button", { name: "Cancel request", exact: true }));
+  await expect.element(page.getByText("Request cancelled", { exact: true })).toBeVisible();
+  await fill(composer, "Cancelled again");
+  await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+  await click(page.getByRole("button", { name: "Cancel request", exact: true }));
+  await expect.element(page.getByText("Request cancelled", { exact: true })).toBeVisible();
+  await fill(composer, "New draft");
+  await act(async () => userEvent.upload(page.getByTestId("ai-image-input"), referenceImage("new-draft.png")));
+  await expect.element(page.getByRole("button", { name: "Remove new-draft.png", exact: true })).toBeVisible();
+  await act(async () => rejectLate(new TypeError("Late transport error")));
+  await expect.element(composer).toHaveValue("New draft");
+  await expect.element(page.getByRole("button", { name: "Remove new-draft.png", exact: true })).toBeVisible();
+  expect(document.querySelectorAll(".ai-message .animate-spin")).toHaveLength(0);
+  await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+  await expect.element(page.getByText("Using your new draft.", { exact: true })).toBeVisible();
+  expect(JSON.parse(fetchMock.mock.calls[2]![1]!.body as string).messages.at(-1).content).toEqual([
+    { type: "text", text: "New draft" },
+    { type: "image_url", image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) } },
+  ]);
 });
 
 test("does not show loading on a completed textless proposal during a new request", async () => {
@@ -3361,18 +3528,21 @@ test("does not show loading on a completed textless proposal during a new reques
   const next = new Promise<Response>((resolve) => {
     resolveNext = resolve;
   });
-  vi.spyOn(globalThis, "fetch")
+  mockModelFetch()
     .mockResolvedValueOnce(chatToolCallResponse("box", "command_scene_createPrimitive", { primitive: "box" }))
     .mockResolvedValueOnce(chatTextResponse("summary", ""))
     .mockReturnValueOnce(next);
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a box"));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Add a box");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByRole("button", { name: "Accept changes", exact: true })).toBeVisible();
   await expect.element(page.getByText("Response complete", { exact: true })).toBeVisible();
   const proposalMessage = document.querySelector(".ai-message:last-child")!;
-  expect(proposalMessage.querySelector("p")!.textContent).toBe("");
-  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Explain the box"));
+  expect(proposalMessage.querySelector('[data-message-part="text"]')).toBeNull();
+  expect(proposalMessage.querySelector(".animate-spin")).toBeNull();
+  // Resolve review before starting an independent request; unresolved work queues follow-ups.
+  await click(page.getByRole("button", { name: "Reject", exact: true }));
+  await fill(page.getByRole("textbox", { name: "Message" }), "Explain the box");
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByRole("button", { name: "Cancel request", exact: true })).toBeVisible();
   expect(proposalMessage.querySelector(".animate-spin")).toBeNull();
@@ -3386,7 +3556,7 @@ test.each([
   {
     label: "network",
     respond: () => Promise.reject(new TypeError("Failed to fetch")),
-    expectedError: /Could not reach the provider/,
+    expectedError: ai.en.networkError,
   },
   {
     label: "tool protocol",
@@ -3409,18 +3579,17 @@ test.each([
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  vi.spyOn(globalThis, "fetch").mockImplementation(respond);
+  mockModelFetch().mockImplementation(respond);
   await addPrimitive();
   await expect.element(page.getByRole("button", { name: "Box", exact: true })).toBeInTheDocument();
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a sphere"));
   await click(page.getByRole("button", { name: "Send prompt" }));
 
   await expect
-    .element(page.getByRole("region", { name: "AI conversation", exact: true }).getByRole("status").last())
+    .element(page.getByRole("region", { name: "Modra", exact: true }).getByRole("status").last())
     .toHaveTextContent("Request failed");
   await expect.element(page.getByRole("alert").getByText(expectedError)).toBeInTheDocument();
-  await expect.element(page.getByText(/Correct settings if needed, then resend/)).toBeInTheDocument();
   await expect.element(page.getByRole("textbox", { name: "Message" })).toHaveValue("Add a sphere");
   expect(document.querySelectorAll(".ai-message")).toHaveLength(label === "tool protocol" ? 2 : 1);
   expect(document.querySelectorAll(".object-row")).toHaveLength(1);
@@ -3435,18 +3604,16 @@ test("removes the saved API key and sends the next request without credentials",
     modelId: "test-model",
     apiKey: "remove-me",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
-    .mockResolvedValue(
-      new Response(
-        [
-          'data: {"id":"chatcmpl-no-key","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"No key sent"},"finish_reason":null}]}\n\n',
-          'data: {"id":"chatcmpl-no-key","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
-          "data: [DONE]\n\n",
-        ].join(""),
-        { headers: { "content-type": "text/event-stream" } },
-      ),
-    );
+  const fetchMock = mockModelFetch().mockResolvedValue(
+    new Response(
+      [
+        'data: {"id":"chatcmpl-no-key","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"No key sent"},"finish_reason":null}]}\n\n',
+        'data: {"id":"chatcmpl-no-key","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ].join(""),
+      { headers: { "content-type": "text/event-stream" } },
+    ),
+  );
 
   await openAISettings();
   const dialog = page.getByRole("dialog", { name: "AI provider settings" });
@@ -3470,21 +3637,19 @@ test("streams text responses directly to the configured provider without a desti
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
-    .mockResolvedValue(
-      new Response(
-        [
-          'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"A cube"},"finish_reason":null}]}\n\n',
-          'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":" is ready."},"finish_reason":null}]}\n\n',
-          'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
-          "data: [DONE]\n\n",
-        ].join(""),
-        { headers: { "content-type": "text/event-stream" } },
-      ),
-    );
+  const fetchMock = mockModelFetch().mockResolvedValue(
+    new Response(
+      [
+        'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":"A cube"},"finish_reason":null}]}\n\n',
+        'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{"content":" is ready."},"finish_reason":null}]}\n\n',
+        'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+      ].join(""),
+      { headers: { "content-type": "text/event-stream" } },
+    ),
+  );
 
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   expect(document.querySelector(".ai-endpoint-disclosure")).toBeNull();
   await expect.element(page.getByText("Request destination", { exact: true })).not.toBeInTheDocument();
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a cube"));
@@ -3499,8 +3664,12 @@ test("streams text responses directly to the configured provider without a desti
   expect(endpoint).toBe("https://models.example.test/v1/chat/completions");
   expect(typeof requestInit?.body).toBe("string");
   const body = JSON.parse(requestInit?.body as string);
-  expect(body.messages).toEqual([{ role: "user", content: "Add a cube" }]);
-  expect(body.tools).toHaveLength(MODELING_COMMANDS.length + MODELING_QUERIES.length);
+  expect(body.messages).toEqual([
+    { role: "system", content: expect.stringContaining("fresh bounded hierarchy") },
+    { role: "user", content: "Add a cube" },
+  ]);
+  expect(body.tools).toHaveLength(MODELING_COMMANDS.length + MODELING_QUERIES.length + 1);
+  expect(body.tools.map((entry: { function: { name: string } }) => entry.function.name)).toContain("update_task_plan");
   expect(body.tools.map((entry: { function: { name: string } }) => entry.function.name)).toContain(
     "command_scene_createPrimitive",
   );
@@ -3523,8 +3692,7 @@ test.each([
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });
-  const fetchMock = vi
-    .spyOn(globalThis, "fetch")
+  const fetchMock = mockModelFetch()
     .mockResolvedValueOnce(
       new Response(
         [
@@ -3538,7 +3706,7 @@ test.each([
     .mockResolvedValueOnce(chatTextResponse("tool-summary", "The scene is ready."))
     .mockResolvedValueOnce(chatTextResponse("task-complete", "The requested task is complete."));
 
-  await click(page.getByRole("button", { name: "AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a box"));
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("Response complete", { exact: true })).toBeInTheDocument();
@@ -3547,9 +3715,12 @@ test.each([
   await expect
     .element(proposal.getByText("Previewing 2 proposed changes on the canvas", { exact: true }))
     .toBeInTheDocument();
-  await expect.element(proposal.getByText('{"primitive":"box","name":"AI box"}', { exact: true })).toBeInTheDocument();
+  const transcript = page.getByLabelText(ai.en.messages, { exact: true });
   await expect
-    .element(proposal.getByText('{"primitive":"uv-sphere","name":"AI sphere"}', { exact: true }))
+    .element(transcript.getByText('{"primitive":"box","name":"AI box"}', { exact: true }))
+    .toBeInTheDocument();
+  await expect
+    .element(transcript.getByText('{"primitive":"uv-sphere","name":"AI sphere"}', { exact: true }))
     .toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledTimes(2);
   await click(proposal.getByRole("button", { name: decision }));
@@ -3558,8 +3729,18 @@ test.each([
     await expect.element(proposal.getByRole("button", { name: "Accept changes" })).not.toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "AI box", exact: true })).toBeInTheDocument();
     await expect.element(page.getByRole("button", { name: "AI sphere", exact: true })).toBeInTheDocument();
+    await expect
+      .element(page.getByText("These changes are present in the current scene.", { exact: true }))
+      .toBeInTheDocument();
     await click(page.getByRole("button", { name: "Undo" }));
     expect(document.querySelectorAll(".object-row")).toHaveLength(0);
+    await expect.element(page.getByText("These changes were undone.", { exact: true })).toBeInTheDocument();
+    await click(page.getByRole("button", { name: "Redo" }));
+    expect(document.querySelectorAll(".object-row")).toHaveLength(2);
+    await expect
+      .element(page.getByText("These changes are present in the current scene.", { exact: true }))
+      .toBeInTheDocument();
+    await click(page.getByRole("button", { name: "Undo" }));
   } else {
     await expect
       .element(proposal.getByText("Proposal rejected. This batch was not applied.", { exact: true }))
@@ -3662,7 +3843,9 @@ test("switches workspace labels and accessible names without remounting the scen
   await expect.element(page.getByRole("application", { name: "交互式 3D 场景" })).toBeVisible();
   await expect.element(page.getByRole("heading", { name: "物体", exact: true })).toBeVisible();
   await expect.element(page.getByRole("textbox", { name: "物体名称" })).toHaveValue("My 桌子");
-  await expect.element(page.getByRole("button", { name: "隐藏 My 桌子" })).toBeVisible();
+  await click(page.getByRole("button", { name: "My 桌子 的操作", exact: true }));
+  await expect.element(page.getByRole("menuitem", { name: "隐藏 My 桌子" })).toBeVisible();
+  await act(async () => userEvent.keyboard("{Escape}"));
   await expect.element(page.getByRole("spinbutton", { name: "位置 X" })).toBeVisible();
   await click(page.getByRole("button", { name: "语言", exact: true }));
   await click(page.getByRole("menuitemradio", { name: "English", exact: true }));
@@ -3741,27 +3924,18 @@ test("localizes object creation, unsaved flows, AI validation and asynchronous f
   );
   expect(loadAIProviderSettings()?.modelId).toBe("user-model-name");
   await expect.element(page.getByRole("dialog", { name: "AI 服务设置", exact: true })).not.toBeInTheDocument();
-  vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+  mockModelFetch().mockRejectedValue(new TypeError("Failed to fetch"));
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "消息" }), "Build my 自定义桌子"));
   await click(page.getByRole("button", { name: "发送提示词" }));
-  await expect
-    .element(
-      page.getByRole("alert").getByText("无法连接服务，请检查端点、网络连接和服务的 CORS 设置。", { exact: true }),
-    )
-    .toBeVisible();
+  await expect.element(page.getByRole("alert").getByText(ai["zh-CN"].networkError, { exact: true })).toBeVisible();
   await expect.element(page.getByRole("textbox", { name: "消息" })).toHaveValue("Build my 自定义桌子");
   await expect.element(page.getByText("user-model-name", { exact: true })).toBeVisible();
   await act(async () => useWorkspaceUiStore.getState().updateDisplayPreferences({ theme: "light", language: "en" }));
   await expect
     .element(
-      page
-        .getByRole("alert")
-        .getByText(
-          "Could not reach the provider. Check the endpoint, network connection, and provider CORS settings.",
-          {
-            exact: true,
-          },
-        ),
+      page.getByRole("alert").getByText(ai.en.networkError, {
+        exact: true,
+      }),
     )
     .toBeVisible();
   await expect.element(page.getByRole("textbox", { name: "Message" })).toHaveValue("Build my 自定义桌子");
@@ -3791,12 +3965,16 @@ test.each(["light", "dark"] as const)(
     );
     await openAISettings();
     expect(
-      getComputedStyle(page.getByRole("dialog", { name: "AI provider settings", exact: true }).element())
-        .backgroundColor,
+      getComputedStyle(
+        page
+          .getByRole("dialog", { name: "AI provider settings", exact: true })
+          .element()
+          .querySelector(".ai-settings-dialog")!,
+      ).backgroundColor,
     ).toBe(toRgb(rootStyle.getPropertyValue("--sheet")));
     await expect.element(page.getByRole("textbox", { name: "URL" })).toBeVisible();
     await click(page.getByRole("button", { name: "Close AI provider settings" }));
-    await click(page.getByRole("button", { name: "Close AI chat", exact: true }));
+    await click(page.getByRole("button", { name: "Close Modra", exact: true }));
     expect(document.querySelector("#viewport-navigation-help")).toBeNull();
   },
 );
@@ -3806,15 +3984,15 @@ test("preserves canvas geometry, draft and property editing while the AI floatin
   const before = canvas.getBoundingClientRect().toJSON();
   expect(document.querySelector('[data-testid="topbar"]')!.textContent).not.toContain("AI");
   await expect.element(page.getByRole("button", { name: "Open AI provider settings" })).not.toBeInTheDocument();
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   await click(toggle);
-  const dialog = page.getByRole("dialog", { name: "AI chat", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Modra", exact: true });
   await expect.element(dialog).toBeVisible();
   expect(dialog.element().getAttribute("aria-modal")).not.toBe("true");
   expect(canvas.getBoundingClientRect().toJSON()).toEqual(before);
   await expect.element(page.getByRole("textbox", { name: "Object name" })).toBeVisible();
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Keep this draft"));
-  await click(page.getByRole("button", { name: "Close AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Close Modra", exact: true }));
   await expect.element(page.getByTestId("ai-floating-dialog")).not.toBeVisible();
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Object name" }), "Still editable"));
   await act(async () => userEvent.keyboard("{Enter}"));
@@ -3832,7 +4010,7 @@ test("preserves canvas geometry, draft and property editing while the AI floatin
 });
 
 test("drags the global AI launcher without opening chat or changing the canvas", async () => {
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   const before = toggle.element().getBoundingClientRect();
   const canvas = document.querySelector("canvas")!;
   const canvasBounds = canvas.getBoundingClientRect().toJSON();
@@ -3841,14 +4019,14 @@ test("drags the global AI launcher without opening chat or changing the canvas",
   expect(after.x).toBeLessThan(before.x - 100);
   expect(after.y).toBeLessThan(before.y - 100);
   expect(after.x).toBeGreaterThanOrEqual(16);
-  await expect.element(page.getByRole("dialog", { name: "AI chat", exact: true })).not.toBeInTheDocument();
+  await expect.element(page.getByRole("dialog", { name: "Modra", exact: true })).not.toBeInTheDocument();
   expect(canvas.getBoundingClientRect().toJSON()).toEqual(canvasBounds);
   await click(toggle);
-  await expect.element(page.getByRole("dialog", { name: "AI chat", exact: true })).toBeVisible();
+  await expect.element(page.getByRole("dialog", { name: "Modra", exact: true })).toBeVisible();
 });
 
 test("repositions the floating AI launcher with keyboard controls and clamps it after resize", async () => {
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   const before = toggle.element().getBoundingClientRect();
   await act(async () => {
     toggle.element().focus();
@@ -3857,12 +4035,12 @@ test("repositions the floating AI launcher with keyboard controls and clamps it 
   const moved = toggle.element().getBoundingClientRect();
   expect(moved.x).toBe(before.x - 10);
   expect(moved.y).toBe(before.y - 10);
-  await expect.element(page.getByRole("dialog", { name: "AI chat", exact: true })).not.toBeInTheDocument();
+  await expect.element(page.getByRole("dialog", { name: "Modra", exact: true })).not.toBeInTheDocument();
   await page.viewport(390, 500);
   await expect.poll(() => toggle.element().getBoundingClientRect().right).toBeLessThanOrEqual(390 - 16);
   expect(toggle.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(500 - 16);
   await click(toggle);
-  const bounds = page.getByRole("dialog", { name: "AI chat", exact: true }).element().getBoundingClientRect();
+  const bounds = page.getByRole("dialog", { name: "Modra", exact: true }).element().getBoundingClientRect();
   expect(bounds.left).toBeGreaterThanOrEqual(0);
   expect(bounds.right).toBeLessThanOrEqual(390);
   expect(bounds.top).toBeGreaterThanOrEqual(0);
@@ -3878,10 +4056,10 @@ test.each([
   { width: 390, horizontal: "Left", vertical: "Up" },
   { width: 390, horizontal: "Right", vertical: "Down" },
 ])(
-  "anchors AI chat beside the $horizontal/$vertical corner at $width without clipping",
+  "anchors Modra beside the $horizontal/$vertical corner at $width without clipping",
   async ({ width, horizontal, vertical }) => {
     await page.viewport(width, 844);
-    const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+    const toggle = page.getByRole("button", { name: "Modra", exact: true });
     await act(async () => {
       toggle.element().focus();
       await userEvent.keyboard(`{Shift>}{Arrow${horizontal}>40/}{Arrow${vertical}>30/}{/Shift}`);
@@ -3908,7 +4086,7 @@ test.each([
 );
 
 test("keeps open chat anchored during launcher dragging, keyboard movement and viewport resize", async () => {
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   await click(toggle);
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Follow this draft"));
   const canvas = document.querySelector("canvas")!;
@@ -3946,9 +4124,66 @@ test("keeps open chat anchored during launcher dragging, keyboard movement and v
   expect(composer.bottom).toBeLessThanOrEqual(dialog.getBoundingClientRect().bottom);
 });
 
+test.each([
+  { width: 390, height: 500, language: "en", theme: "light" },
+  { width: 768, height: 900, language: "en", theme: "dark" },
+  { width: 1440, height: 900, language: "zh-CN", theme: "light" },
+] as const)(
+  "groups Modra session, execution and context controls at $width/$language",
+  async ({ width, height, language, theme }) => {
+    await page.viewport(width, height);
+    await initializeI18n(language);
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    saveAIProviderSettings({
+      protocol: "openai-compatible",
+      baseURL: "https://models.example.test/v1",
+      modelId: "model-with-a-long-identifier-for-layout-verification",
+    });
+    mockModelFetch().mockResolvedValue(
+      chatTextResponse(
+        "layout",
+        language === "en"
+          ? "I will build the base, stem and shade as separate objects, then align them in the scene."
+          : "我会将灯座、支架和灯罩分别建模，然后在场景中对齐。",
+      ),
+    );
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    const dialog = page.getByTestId("ai-floating-dialog");
+    const prompt = page.getByRole("textbox", { name: ai[language].message, exact: true });
+    await fill(prompt, language === "en" ? "Build a reading lamp" : "创建一盏台灯");
+    await settleAIPosition();
+    const bounds = dialog.element().getBoundingClientRect();
+    const heading = dialog.element().querySelector(".ai-conversation-heading")!.getBoundingClientRect();
+    const modes = dialog.element().querySelector(".modra-mode-controls")!.getBoundingClientRect();
+    const context = dialog.element().querySelector(".modra-context-controls")!.getBoundingClientRect();
+    const transcript = dialog.element().querySelector(".ai-transcript")!.getBoundingClientRect();
+    expect(heading.top).toBeGreaterThanOrEqual(bounds.top);
+    expect(transcript.height).toBeGreaterThanOrEqual(80);
+    const body = dialog.element().querySelector(".ai-conversation-body")!.getBoundingClientRect();
+    expect(transcript.top).toBeGreaterThanOrEqual(body.top);
+    expect(transcript.bottom).toBeLessThanOrEqual(body.bottom);
+    expect(prompt.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(modes.top);
+    expect(Math.abs((modes.top + modes.bottom) / 2 - (context.top + context.bottom) / 2)).toBeLessThanOrEqual(1);
+    expect(modes.right).toBeLessThanOrEqual(context.left);
+    expect(heading.bottom).toBeLessThanOrEqual(body.top);
+    expect(context.bottom).toBeLessThanOrEqual(bounds.bottom);
+    for (const button of dialog.element().querySelectorAll(".ai-prompt-form button")) {
+      const rect = button.getBoundingClientRect();
+      expect(rect.left).toBeGreaterThanOrEqual(bounds.left);
+      expect(rect.right).toBeLessThanOrEqual(bounds.right);
+      expect(button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2))).toBe(true);
+    }
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    await click(page.getByRole("button", { name: ai[language].send, exact: true }));
+    await expect
+      .element(page.getByText(language === "en" ? "Response complete" : ai[language].complete, { exact: true }))
+      .toBeInTheDocument();
+  },
+);
+
 test("keeps centrally anchored chat readable on a short narrow viewport", async () => {
   await page.viewport(390, 500);
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   await act(async () => {
     toggle.element().focus();
     await userEvent.keyboard("{Shift>}{ArrowLeft>4/}{ArrowUp>5/}{/Shift}");
@@ -3959,12 +4194,12 @@ test("keeps centrally anchored chat readable on a short narrow viewport", async 
   const composer = page.getByRole("textbox", { name: "Message" }).element().getBoundingClientRect();
   expect(composer.top).toBeGreaterThanOrEqual(bounds.top);
   expect(composer.bottom).toBeLessThanOrEqual(bounds.bottom);
-  expect(composer.height).toBeGreaterThanOrEqual(40);
+  expect(composer.height).toBe(32);
 });
 
 test("does not flicker between vertical and horizontal placements during a native drag across the side-fit boundary", async () => {
   await page.viewport(900, 1000);
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   await act(async () => {
     toggle.element().focus();
     await userEvent.keyboard(
@@ -4021,7 +4256,7 @@ test("does not flicker between vertical and horizontal placements during a nativ
       expect(bounds.width).toBe(420);
     }
     expect(changes).toEqual(["left-end", "bottom-end"]);
-    await expect.element(page.getByRole("dialog", { name: "AI chat", exact: true })).toBeVisible();
+    await expect.element(page.getByRole("dialog", { name: "Modra", exact: true })).toBeVisible();
   } finally {
     observer.disconnect();
     await act(async () =>
@@ -4032,7 +4267,7 @@ test("does not flicker between vertical and horizontal placements during a nativ
 
 test("retains vertical placement around the center line until the opposite side has meaningfully more room", async () => {
   await page.viewport(390, 1000);
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   await act(async () => {
     toggle.element().focus();
     await userEvent.keyboard("{Shift>}{ArrowLeft>40/}{ArrowRight>4/}{ArrowUp>40/}{ArrowDown>11/}{/Shift}{ArrowDown}");
@@ -4057,24 +4292,24 @@ test("retains vertical placement around the center line until the opposite side 
 });
 
 test("animates chat entry and exit, preserves rapid reopening and honors reduced motion", async () => {
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   await click(toggle);
   const dialog = page.getByTestId("ai-floating-dialog").element();
   expect(getComputedStyle(dialog).transitionProperty).toBe("opacity, scale");
   expect(parseFloat(getComputedStyle(dialog).transitionDuration)).toBeGreaterThan(0);
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Preserved through transition"));
-  await act(async () => userEvent.click(page.getByRole("button", { name: "Close AI chat", exact: true })));
+  await act(async () => userEvent.click(page.getByRole("button", { name: "Close Modra", exact: true })));
   expect(dialog.hasAttribute("data-ending-style")).toBe(true);
   expect(dialog.hasAttribute("hidden")).toBe(false);
   await expect.poll(() => dialog.getAnimations().length).toBeGreaterThan(0);
   await click(toggle);
   await expect.element(page.getByRole("textbox", { name: "Message" })).toHaveValue("Preserved through transition");
-  await click(page.getByRole("button", { name: "Close AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Close Modra", exact: true }));
   await expect.poll(() => dialog.hasAttribute("hidden")).toBe(true);
   await act(async () => userEvent.click(toggle));
   await expect.poll(() => dialog.getAnimations().length).toBeGreaterThan(0);
   await settleAIPosition();
-  await click(page.getByRole("button", { name: "Close AI chat", exact: true }));
+  await click(page.getByRole("button", { name: "Close Modra", exact: true }));
   await expect.poll(() => dialog.hasAttribute("hidden")).toBe(true);
   const session = cdp();
   await session.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
@@ -4082,7 +4317,7 @@ test("animates chat entry and exit, preserves rapid reopening and honors reduced
     await click(toggle);
     expect(getComputedStyle(dialog).transitionProperty).toBe("none");
     expect(dialog.getAnimations()).toHaveLength(0);
-    await click(page.getByRole("button", { name: "Close AI chat", exact: true }));
+    await click(page.getByRole("button", { name: "Close Modra", exact: true }));
     await expect.poll(() => dialog.hasAttribute("hidden")).toBe(true);
   } finally {
     await session.send("Emulation.setEmulatedMedia", { features: [] });
@@ -4098,7 +4333,7 @@ test("moves the floating launcher with touch and distinguishes a drag from a tap
     returnByValue: true,
   });
   const offset = JSON.parse(result.value as string) as { x: number; y: number };
-  const toggle = page.getByRole("button", { name: "AI chat", exact: true });
+  const toggle = page.getByRole("button", { name: "Modra", exact: true });
   const before = toggle.element().getBoundingClientRect();
   const touch = (x: number, y: number) => ({ x: x + offset.x, y: y + offset.y, id: 1 });
   await session.send("Emulation.setTouchEmulationEnabled", { enabled: true });
@@ -4117,7 +4352,7 @@ test("moves the floating launcher with touch and distinguishes a drag from a tap
     const after = toggle.element().getBoundingClientRect();
     expect(after.x).toBeLessThan(before.x - 50);
     expect(after.y).toBeLessThan(before.y - 100);
-    await expect.element(page.getByRole("dialog", { name: "AI chat", exact: true })).not.toBeInTheDocument();
+    await expect.element(page.getByRole("dialog", { name: "Modra", exact: true })).not.toBeInTheDocument();
     await act(async () => {
       await session.send("Input.dispatchTouchEvent", {
         type: "touchStart",
@@ -4125,7 +4360,7 @@ test("moves the floating launcher with touch and distinguishes a drag from a tap
       });
       await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     });
-    await expect.element(page.getByRole("region", { name: "AI conversation", exact: true })).toBeVisible();
+    await expect.element(page.getByRole("region", { name: "Modra", exact: true })).toBeVisible();
     await settleAIPosition();
     const dialog = page.getByTestId("ai-floating-dialog").element();
     const chatBefore = dialog.getBoundingClientRect();
@@ -4187,11 +4422,691 @@ test.each([
     }
     await expect.element(page.getByRole("region", { name: zh ? "3D 视口" : "3D viewport" })).toBeVisible();
     const canvasBounds = document.querySelector("canvas")!.getBoundingClientRect().toJSON();
-    await click(page.getByRole("button", { name: zh ? "AI 对话" : "AI chat", exact: true }));
+    await click(page.getByRole("button", { name: zh ? "Modra" : "Modra", exact: true }));
     await expect.element(page.getByRole("textbox", { name: zh ? "消息" : "Message" })).toBeVisible();
     expect(document.querySelector("canvas")!.getBoundingClientRect().toJSON()).toEqual(canvasBounds);
     noOverflow();
-    await click(page.getByRole("button", { name: zh ? "关闭 AI 对话" : "Close AI chat", exact: true }));
+    await click(page.getByRole("button", { name: zh ? "关闭 Modra" : "Close Modra", exact: true }));
     expect(document.querySelector("canvas")).toBe(initialCanvas);
+  },
+);
+test.each(["manual edit", "undo", "credential removal"])(
+  "invalidates an AI preview after %s before approval",
+  async (change) => {
+    saveAIProviderSettings({
+      protocol: "openai-compatible",
+      baseURL: "https://models.example.test/v1",
+      modelId: "test-model",
+      apiKey: "test-credential",
+    });
+    await addPrimitive();
+    const commit = vi.spyOn(WorkspaceModelingHost.prototype, "commit");
+    const fetch = mockModelFetch()
+      .mockResolvedValueOnce(
+        chatToolCallResponse("stale", "command_scene_createPrimitive", { primitive: "box", name: "Obsolete box" }),
+      )
+      .mockResolvedValueOnce(chatTextResponse("stale-summary", "Review this box."));
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    await act(async () =>
+      userEvent.fill(page.getByRole("textbox", { name: "Message", exact: true }), "Add another box"),
+    );
+    await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+    await expect.element(page.getByRole("button", { name: "Accept changes", exact: true })).toBeVisible();
+    await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+    if (change === "undo") await click(page.getByRole("button", { name: "Undo", exact: true }));
+    else if (change === "credential removal")
+      await act(async () => {
+        removeAIProviderCredential();
+      });
+    else await addPrimitive("cylinder");
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    await expect.element(page.getByRole("button", { name: "Accept changes", exact: true })).not.toBeInTheDocument();
+    await expect.element(page.getByText("AI preview · not applied", { exact: true })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("alert"))
+      .toHaveTextContent("The scene or connection changed. Generate a fresh proposal before applying changes.");
+    expect(commit).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(document.querySelectorAll(".object-row")).toHaveLength(
+      change === "undo" ? 0 : change === "credential removal" ? 1 : 2,
+    );
+  },
+);
+
+test("duplicate AI commit callbacks cannot apply a batch again, including after Undo", async () => {
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example.test/v1",
+    modelId: "test-model",
+  });
+  const commit = vi.spyOn(WorkspaceModelingHost.prototype, "commit");
+  mockModelFetch()
+    .mockResolvedValueOnce(
+      chatToolCallResponse("once", "command_scene_createPrimitive", { primitive: "box", name: "Single box" }),
+    )
+    .mockResolvedValueOnce(chatTextResponse("once-summary", "Review."))
+    .mockResolvedValueOnce(chatTextResponse("once-done", "Done."));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message", exact: true }), "Add one box"));
+  await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+  await click(page.getByRole("button", { name: "Accept changes", exact: true }));
+  await expect.element(page.getByText("Done.", { exact: true })).toBeVisible();
+  const host = commit.mock.contexts[0] as WorkspaceModelingHost;
+  const [id, base, commands] = commit.mock.calls[0]!;
+  expect(() => host.commit(id, host.snapshot().version, commands)).toThrow("already-applied-change-set");
+  expect(document.querySelectorAll(".object-row")).toHaveLength(1);
+  await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+  await click(page.getByRole("button", { name: "Undo", exact: true }));
+  expect(document.querySelectorAll(".object-row")).toHaveLength(0);
+  expect(() => host.commit(id, base, commands)).toThrow("stale-change-set");
+  expect(() => host.commit(id, host.snapshot().version, commands)).toThrow("already-applied-change-set");
+  expect(host.processor.historyLength).toBe(0);
+  await click(page.getByRole("button", { name: "Redo", exact: true }));
+  expect(document.querySelectorAll(".object-row")).toHaveLength(1);
+});
+
+test("removing credentials aborts an active staged run without retry or continuation", async () => {
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example.test/v1",
+    modelId: "test-model",
+    apiKey: "temporary-test-key",
+  });
+  const summary = controlledChatResponse("credential-revoked");
+  const fetch = mockModelFetch()
+    .mockResolvedValueOnce(
+      chatToolCallResponse("credential-preview", "command_scene_createPrimitive", {
+        primitive: "box",
+        name: "Revoked preview",
+      }),
+    )
+    .mockResolvedValueOnce(summary.response);
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message", exact: true }), "Create a box"));
+  await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+  await expect.element(page.getByText("AI preview · not applied", { exact: true })).toBeVisible();
+  await expect.poll(() => fetch.mock.calls.length).toBe(2);
+  await act(async () => {
+    removeAIProviderCredential();
+  });
+  await expect.element(page.getByRole("button", { name: "Cancel request", exact: true })).not.toBeInTheDocument();
+  await expect.element(page.getByText("AI preview · not applied", { exact: true })).not.toBeInTheDocument();
+  await act(async () => {
+    summary.text("Late response");
+    summary.finish();
+  });
+  await expect.element(page.getByText("Late response", { exact: true })).not.toBeInTheDocument();
+  expect(document.querySelectorAll(".object-row")).toHaveLength(0);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(loadAIProviderSettings()?.apiKey).toBeUndefined();
+});
+
+test.each([
+  { width: 390, theme: "light", language: "en" },
+  { width: 768, theme: "dark", language: "zh-CN" },
+  { width: 1440, theme: "dark", language: "en" },
+  { width: 1440, theme: "light", language: "zh-CN" },
+] as const)(
+  "preserves suspended Modra reading through errors and reopen at $width/$theme/$language",
+  async ({ width, theme, language }) => {
+    await act(async () => useWorkspaceUiStore.getState().updateDisplayPreferences({ theme, language }));
+    await page.viewport(width, 844);
+    const zh = language === "zh-CN";
+    saveAIProviderSettings({
+      protocol: "openai-compatible",
+      baseURL: "https://models.example.test/v1",
+      modelId: "test-model",
+    });
+    const stream = controlledChatResponse("reading");
+    mockModelFetch().mockResolvedValueOnce(stream.response);
+    const canvas = document.querySelector("canvas")!;
+    const geometry = canvas.getBoundingClientRect().toJSON();
+    await click(page.getByRole("button", { name: zh ? "Modra" : "Modra", exact: true }));
+    await act(async () =>
+      userEvent.fill(page.getByRole("textbox", { name: zh ? "消息" : "Message", exact: true }), "Explain the model"),
+    );
+    await click(page.getByRole("button", { name: zh ? "发送提示词" : "Send prompt", exact: true }));
+    const text = Array.from({ length: 100 }, (_, index) => `${zh ? "建模细节" : "Modeling detail"} ${index}`).join(
+      "\n\n",
+    );
+    await act(async () => stream.text(text));
+    await expect
+      .element(page.getByText(`${zh ? "建模细节" : "Modeling detail"} 99`, { exact: true }))
+      .toBeInTheDocument();
+    const transcript = document.querySelector<HTMLDivElement>(".ai-transcript")!;
+    await expect.poll(() => transcript.scrollHeight - transcript.clientHeight).toBeGreaterThan(500);
+    await expect
+      .poll(() => transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop)
+      .toBeLessThanOrEqual(1);
+    await act(async () => {
+      transcript.scrollTop = 120;
+      transcript.dispatchEvent(new Event("scroll"));
+    });
+    const bottom = page.getByRole("button", { name: zh ? "返回底部" : "Return to bottom", exact: true });
+    await expect.element(bottom).toBeVisible();
+    const top = transcript.scrollTop;
+    await act(async () => stream.text(`\n${text}`));
+    expect(transcript.scrollTop).toBe(top);
+    await act(async () => stream.fail());
+    await expect.element(page.getByRole("alert")).toBeVisible();
+    expect(transcript.scrollTop).toBe(top);
+    await click(page.getByRole("button", { name: zh ? "关闭 Modra" : "Close Modra", exact: true }));
+    await click(page.getByRole("button", { name: zh ? "Modra" : "Modra", exact: true }));
+    await expect.element(bottom).toBeVisible();
+    expect(transcript.scrollTop).toBe(top);
+    expect(canvas.getBoundingClientRect().toJSON()).toEqual(geometry);
+    expect(bottom.element().getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      document.querySelector(".ai-prompt-form")!.getBoundingClientRect().top,
+    );
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    await click(bottom);
+    await expect
+      .poll(() => transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop)
+      .toBeLessThanOrEqual(1);
+  },
+);
+
+test("late tool responses cannot preview or commit into an imported scene with the same document ID", async () => {
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example.test/v1",
+    modelId: "test-model",
+  });
+  const snapshot = vi.spyOn(WorkspaceModelingHost.prototype, "snapshot");
+  let resolveOld!: (response: Response) => void;
+  const oldResponse = new Promise<Response>((resolve) => {
+    resolveOld = resolve;
+  });
+  const fetch = mockModelFetch()
+    .mockReturnValueOnce(oldResponse)
+    .mockResolvedValueOnce(chatTextResponse("new-scene", "New scene only."));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  const oldVersion = snapshot.mock.results.at(-1)!.value!;
+  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message", exact: true }), "Old task"));
+  await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+  await expect.element(page.getByRole("button", { name: "Cancel request", exact: true })).toBeVisible();
+  await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+  const replacement = createProcessor(emptyDocument());
+  expect(replacement.getDocumentSnapshot().id).toBe(oldVersion.document.id);
+  replacement.executeCommand({
+    commandId: "scene.createPrimitive",
+    arguments: { primitive: "cylinder", name: "Replacement only" },
+  });
+  await act(async () =>
+    userEvent.upload(
+      page.getByLabelText("Project or glTF files"),
+      new File([serializeNativeProject(replacement.getDocumentSnapshot())], "replacement.open3d", {
+        type: "application/vnd.open-3d.project+json",
+      }),
+    ),
+  );
+  await expect.element(page.getByRole("button", { name: "Replacement only", exact: true })).toBeInTheDocument();
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await act(async () => {
+    resolveOld(chatToolCallResponse("late", "command_scene_createPrimitive", { primitive: "box", name: "Late box" }));
+  });
+  await act(async () =>
+    userEvent.fill(page.getByRole("textbox", { name: "Message", exact: true }), "Inspect replacement"),
+  );
+  await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+  await expect.element(page.getByText("New scene only.", { exact: true })).toBeVisible();
+  expect(snapshot.mock.results.at(-1)!.value!.version.generationId).not.toBe(oldVersion.version.generationId);
+  expect(document.querySelectorAll(".object-row")).toHaveLength(1);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  await expect.element(page.getByText("AI preview · not applied", { exact: true })).not.toBeInTheDocument();
+  await expect.element(page.getByRole("button", { name: "Accept changes", exact: true })).not.toBeInTheDocument();
+});
+test("a manual edit during an automatic batch prevents its late summary from committing", async () => {
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example.test/v1",
+    modelId: "test-model",
+  });
+  let finish!: (response: Response) => void;
+  const summary = new Promise<Response>((resolve) => {
+    finish = resolve;
+  });
+  const commit = vi.spyOn(WorkspaceModelingHost.prototype, "commit");
+  const fetch = mockModelFetch()
+    .mockResolvedValueOnce(
+      chatToolCallResponse("auto-stale", "command_scene_createPrimitive", {
+        primitive: "box",
+        name: "Obsolete automatic box",
+      }),
+    )
+    .mockReturnValueOnce(summary);
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await click(page.getByRole("button", { name: "Approval mode", exact: true }));
+  await click(page.getByRole("menuitemradio", { name: "Auto-approve", exact: true }));
+  await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message", exact: true }), "Add a box"));
+  await click(page.getByRole("button", { name: "Send prompt", exact: true }));
+  await expect.element(page.getByText("AI preview · not applied", { exact: true })).toBeVisible();
+  await expect.poll(() => fetch.mock.calls.length).toBe(2);
+  await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+  await addPrimitive("cylinder");
+  await act(async () => finish(chatTextResponse("late-auto-summary", "Apply obsolete automatic box now.")));
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await expect
+    .element(page.getByRole("alert"))
+    .toHaveTextContent("The scene or connection changed. Generate a fresh proposal before applying changes.");
+  expect(commit).not.toHaveBeenCalled();
+  expect(document.querySelectorAll(".object-row")).toHaveLength(1);
+  expect(document.querySelector(".object-row")!.textContent).toContain("Cylinder");
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+test.each([
+  { protocol: "openai-responses", label: "OpenAI Responses", fixture: responsesFixture, language: "en", width: 390 },
+  {
+    protocol: "anthropic-messages",
+    label: "Anthropic Messages",
+    fixture: anthropicFixture,
+    language: "en",
+    width: 390,
+  },
+  { protocol: "gemini", label: "Gemini", fixture: geminiFixture, language: "en", width: 390 },
+  {
+    protocol: "openai-responses",
+    label: "OpenAI Responses",
+    fixture: responsesFixture,
+    language: "zh-CN",
+    width: 1440,
+  },
+  {
+    protocol: "anthropic-messages",
+    label: "Anthropic Messages",
+    fixture: anthropicFixture,
+    language: "zh-CN",
+    width: 1440,
+  },
+  { protocol: "gemini", label: "Gemini", fixture: geminiFixture, language: "zh-CN", width: 1440 },
+] as const)(
+  "configures $protocol and reviews native modeling tools at $width/$language",
+  async ({ protocol, label, fixture: nativeFixture, language, width }) => {
+    await act(async () => {
+      await page.viewport(width, 900);
+      useWorkspaceUiStore
+        .getState()
+        .updateDisplayPreferences({ theme: language === "en" ? "light" : "dark", language });
+    });
+    const zh = language === "zh-CN";
+    await openAISettings();
+    const settings = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI provider settings", exact: true });
+    await click(settings.getByRole("combobox", { name: zh ? "协议" : "Protocol", exact: true }));
+    await click(page.getByRole("option", { name: label, exact: true }));
+    await act(async () => {
+      await userEvent.fill(
+        settings.getByRole("textbox", { name: "URL", exact: true }),
+        "https://models.example.test/v1",
+      );
+      await userEvent.fill(settings.getByRole("textbox", { name: zh ? "模型" : "Model", exact: true }), "test-model");
+    });
+    await click(settings.getByRole("button", { name: zh ? "保存" : "Save", exact: true }));
+    expect(loadAIProviderSettings()).toMatchObject({ protocol, route: "direct", modelId: "test-model" });
+    const fetchMock = mockModelFetch()
+      .mockResolvedValueOnce(
+        nativeFixture({
+          id: "native-box",
+          name: "command_scene_createPrimitive",
+          input: { primitive: "box", name: "Native box" },
+        }),
+      )
+      .mockImplementation(async () => nativeFixture(undefined, "Native result"));
+    await act(async () =>
+      userEvent.fill(page.getByRole("textbox", { name: zh ? "消息" : "Message", exact: true }), "Build a box"),
+    );
+    await click(page.getByRole("button", { name: zh ? "发送提示词" : "Send prompt", exact: true }));
+    await expect
+      .element(page.getByRole("button", { name: zh ? "接受更改" : "Accept changes", exact: true }))
+      .toBeVisible();
+    expect(document.querySelectorAll(".object-row")).toHaveLength(0);
+    await click(page.getByRole("button", { name: zh ? "接受更改" : "Accept changes", exact: true }));
+    await expect.poll(() => document.querySelectorAll(".object-row").length).toBe(1);
+    await expect.element(page.getByText(zh ? "响应完成" : "Response complete", { exact: true })).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    await openAISettings();
+    await expect
+      .element(settings.getByRole("combobox", { name: zh ? "协议" : "Protocol", exact: true }))
+      .toHaveTextContent(label);
+  },
+);
+test("first scene save adopts Modra history and reopens it without leaking into a duplicate", async () => {
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example/v1",
+    modelId: "test-model",
+  });
+  const fetch = mockModelFetch().mockImplementation(async () =>
+    chatTextResponse("adopted", "History for the original project"),
+  );
+  const repo = new IndexedDBModraRepository();
+  const store = createLocalProjectStore();
+  try {
+    await addPrimitive();
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    const input = page.getByRole("textbox", { name: ai.en.message, exact: true });
+    await act(async () => userEvent.fill(input, "Remember the original scene"));
+    await click(page.getByRole("button", { name: ai.en.send, exact: true }));
+    await expect.element(page.getByText("History for the original project", { exact: true })).toBeVisible();
+    const [session] = await repo.list();
+    await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+    await click(page.getByRole("button", { name: "Save", exact: true }));
+    await expect.poll(() => document.querySelector(".save-state")?.textContent).toBe("Saved");
+    const [project] = await store.list();
+    expect(await repo.scopeForProject(project!.id)).toBe(session!.scopeId);
+    const duplicate = await store.duplicate(project!.id, "Separate copy");
+    await act(async () => root.unmount());
+    await drainModraClosures();
+    root = createRoot(container);
+    await act(async () => root.render(<WorkspaceApp />));
+    await click(page.getByRole("button", { name: "Open projects", exact: true }));
+    const manager = page.getByRole("dialog", { name: "Projects", exact: true });
+    await act(async () =>
+      userEvent.fill(manager.getByRole("textbox", { name: "Search projects", exact: true }), project!.name),
+    );
+    await click(manager.getByRole("button", { name: "Open", exact: true }));
+    await expect.poll(() => document.querySelector(".project-name")?.textContent).toContain(project!.name);
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    await expect.element(page.getByText("History for the original project", { exact: true })).toBeVisible();
+    expect(await repo.list(session!.scopeId)).toHaveLength(1);
+    await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+    await click(page.getByRole("button", { name: "Open projects", exact: true }));
+    await act(async () =>
+      userEvent.fill(manager.getByRole("textbox", { name: "Search projects", exact: true }), duplicate.name),
+    );
+    await click(manager.getByRole("button", { name: "Open", exact: true }));
+    await expect.poll(() => document.querySelector(".project-name")?.textContent).toContain(duplicate.name);
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    expect(document.querySelector(".ai-transcript")?.textContent).not.toContain("History for the original");
+    expect(await repo.scopeForProject(duplicate.id)).toBe(`project:${duplicate.id}`);
+    expect(fetch).toHaveBeenCalledOnce();
+  } finally {
+    await repo.close();
+    store.close?.();
+  }
+});
+test.each(["streaming", "review"] as const)(
+  "deleting the active project during %s fences durable work and re-save cannot resurrect history",
+  async (phase) => {
+    saveAIProviderSettings({
+      protocol: "openai-compatible",
+      baseURL: "https://models.example/v1",
+      modelId: "test-model",
+    });
+    const stream = controlledChatResponse("deleted");
+    const fetch = mockModelFetch();
+    if (phase === "streaming") fetch.mockResolvedValueOnce(stream.response);
+    else
+      fetch
+        .mockResolvedValueOnce(
+          chatToolCallResponse("preview", "command_scene_createPrimitive", { primitive: "box", name: "Unconfirmed" }),
+        )
+        .mockResolvedValueOnce(chatTextResponse("review", "Review this preview"));
+    const repo = new IndexedDBModraRepository();
+    const store = createLocalProjectStore();
+    try {
+      await addPrimitive();
+      await click(page.getByRole("button", { name: "Save", exact: true }));
+      await expect.poll(() => document.querySelector(".save-state")?.textContent).toBe("Saved");
+      const [project] = await store.list();
+      await click(page.getByRole("button", { name: "Modra", exact: true }));
+      await act(async () =>
+        userEvent.fill(page.getByRole("textbox", { name: ai.en.message }), "Work belonging to the deleted project"),
+      );
+      await click(page.getByRole("button", { name: ai.en.send, exact: true }));
+      if (phase === "streaming") {
+        await act(async () => stream.text("Before deletion"));
+        await expect.element(page.getByText("Before deletion", { exact: true })).toBeVisible();
+      } else await expect.element(page.getByRole("button", { name: ai.en.accept, exact: true })).toBeEnabled();
+      await expect.poll(async () => (await repo.list()).length).toBe(1);
+      const [record] = await repo.list();
+      await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+      await click(page.getByRole("button", { name: "Open projects", exact: true }));
+      const manager = page.getByRole("dialog", { name: "Projects", exact: true });
+      await click(manager.getByRole("button", { name: /^Manage / }));
+      await click(page.getByRole("menuitem", { name: "Delete", exact: true }));
+      await click(
+        page
+          .getByRole("dialog", { name: "Delete project?", exact: true })
+          .getByRole("button", { name: "Delete", exact: true }),
+      );
+      await expect.poll(async () => (await store.list()).length).toBe(0);
+      await expect.poll(async () => (await repo.list(record!.scopeId)).length).toBe(0);
+      await click(manager.getByRole("button", { name: "Close projects", exact: true }));
+      await act(async () => {
+        stream.text("Late output must be ignored");
+        stream.finish();
+      });
+      expect(document.querySelectorAll(".object-row")).toHaveLength(1);
+      expect(document.querySelector(".viewport-canvas")?.getAttribute("data-ai-preview")).not.toBe("true");
+      await click(page.getByRole("button", { name: "Save", exact: true }));
+      await expect.poll(() => document.querySelector(".save-state")?.textContent).toBe("Saved");
+      const [replacement] = await store.list();
+      expect(replacement!.id).not.toBe(project!.id);
+      expect(await repo.scopeForProject(replacement!.id)).not.toBe(record!.scopeId);
+      await click(page.getByRole("button", { name: "Modra", exact: true }));
+      expect(document.querySelector(".ai-transcript")?.textContent).not.toContain("Work belonging");
+      expect(document.querySelector(".ai-transcript")?.textContent).not.toContain("Late output");
+      expect(fetch).toHaveBeenCalledTimes(phase === "streaming" ? 1 : 2);
+    } finally {
+      await repo.close();
+      store.close?.();
+    }
+  },
+);
+
+test.each(["unavailable", "newer-version", "corrupt", "quota"] as const)(
+  "Modra storage %s does not prevent independent native scene save or opening",
+  async (code) => {
+    const repo = new IndexedDBModraRepository();
+    const store = createLocalProjectStore();
+    vi.spyOn(repo, "prepareProjectScope").mockRejectedValue(new ModraStorageError(code));
+    vi.spyOn(repo, "scopeForProject").mockRejectedValue(new ModraStorageError(code));
+    try {
+      await act(async () => {
+        root.unmount();
+        root = createRoot(container);
+        root.render(<WorkspaceApp projectStore={store} modraRepository={repo} />);
+      });
+      await addPrimitive();
+      await click(page.getByRole("button", { name: "Save", exact: true }));
+      await expect.poll(() => document.querySelector(".save-state")?.textContent).toBe("Saved");
+      const [project] = await store.list();
+      expect(Object.keys((await store.load(project!.id)).objects)).toHaveLength(1);
+      await click(page.getByRole("button", { name: "Open projects", exact: true }));
+      await click(
+        page.getByRole("dialog", { name: "Projects", exact: true }).getByRole("button", { name: "Open", exact: true }),
+      );
+      await expect.element(page.getByRole("button", { name: "Box", exact: true })).toBeVisible();
+      expect(document.querySelectorAll(".object-row")).toHaveLength(1);
+      expect(await repo.list()).toEqual([]);
+    } finally {
+      await repo.close();
+      store.close?.();
+    }
+  },
+);
+test("launcher robot reflects idle, hidden generation, completion and failure without changing its hit target", async () => {
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example.test/v1",
+    modelId: "test-model",
+  });
+  const stream = controlledChatResponse("robot");
+  const fetch = mockModelFetch()
+    .mockResolvedValueOnce(stream.response)
+    .mockResolvedValueOnce(new Response("Denied", { status: 401 }));
+  const launcher = page.getByRole("button", { name: "Modra", exact: true });
+  await expect.element(launcher).toHaveAttribute("data-modra-activity", "idle");
+  const before = launcher.element().getBoundingClientRect();
+  await click(launcher);
+  await fill(page.getByRole("textbox", { name: ai.en.message }), "Create a lamp");
+  await click(page.getByRole("button", { name: ai.en.send }));
+  await expect.element(launcher).toHaveAttribute("data-modra-activity", "generating");
+  await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+  await expect.element(launcher).toHaveAttribute("data-modra-activity", "generating");
+  await act(async () => {
+    stream.text("The lamp is ready.");
+    stream.finish();
+  });
+  await expect.element(launcher).toHaveAttribute("data-modra-activity", "completed");
+  expect(launcher.element().getBoundingClientRect().width).toBe(before.width);
+  expect(launcher.element().getBoundingClientRect().height).toBe(before.height);
+  await click(launcher);
+  await expect.element(launcher).toHaveAttribute("data-modra-activity", "idle");
+  await fill(page.getByRole("textbox", { name: ai.en.message }), "Adjust the lamp");
+  await click(page.getByRole("button", { name: ai.en.send }));
+  await expect.element(launcher).toHaveAttribute("data-modra-activity", "error");
+  expect(fetch).toHaveBeenCalledTimes(2);
+  const session = cdp();
+  await session.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
+  try {
+    expect(getComputedStyle(launcher.element().querySelector(".modra-robot-head")!).animationName).toBe("none");
+    expect(launcher.element().querySelector("svg")?.getAttribute("data-activity")).toBe("error");
+  } finally {
+    await session.send("Emulation.setEmulatedMedia", { features: [] });
+  }
+});
+test.for([390, 768, 1440])("keeps timestamp and compact copy aligned in message headers at %i", async (width) => {
+  await page.viewport(width, 900);
+  saveAIProviderSettings({
+    protocol: "openai-compatible",
+    baseURL: "https://models.example.test/v1",
+    modelId: "test-model",
+  });
+  mockModelFetch().mockImplementation(async () =>
+    chatTextResponse("layout", "The reading lamp is ready.\n\nReview the shade and base before the next step."),
+  );
+  await click(page.getByRole("button", { name: "Modra", exact: true }));
+  await fill(page.getByRole("textbox", { name: ai.en.message }), "Build a reading lamp");
+  await click(page.getByRole("button", { name: ai.en.send }));
+  await expect.element(page.getByText("Response complete", { exact: true })).toBeVisible();
+  await expect.element(page.getByRole("button", { name: ai.en.sessions, exact: true })).toHaveTextContent("Modeling");
+  const headers = document.querySelectorAll<HTMLElement>(".ai-message-header");
+  expect(headers).toHaveLength(2);
+  const articles = Array.from(document.querySelectorAll<HTMLElement>(".ai-message"));
+  expect(articles[0].getBoundingClientRect().left).toBe(articles[1].getBoundingClientRect().left);
+  expect(articles[0].getBoundingClientRect().width).toBe(articles[1].getBoundingClientRect().width);
+  expect(
+    page.getByRole("button", { name: "Close Modra", exact: true }).element().querySelector(".lucide-minus"),
+  ).not.toBeNull();
+  for (const header of headers) {
+    const time = header.querySelector("time")!;
+    const copy = header.querySelector("button")!;
+    const bounds = header.getBoundingClientRect();
+    const button = copy.getBoundingClientRect();
+    expect(time.textContent?.length).toBeGreaterThan(0);
+    expect(button.width).toBe(24);
+    expect(Math.abs(button.right - bounds.right)).toBeLessThanOrEqual(1);
+    expect(button.left).toBeGreaterThanOrEqual(time.getBoundingClientRect().right);
+  }
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  if (width === 390) {
+    await expect
+      .element(page.getByRole("button", { name: "Modra", exact: true }), { timeout: 6000 })
+      .toHaveAttribute("data-modra-activity", "idle");
+  }
+});
+test.each(["en", "zh-CN"] as const)(
+  "creates a project from manager chrome without losing unsaved work in %s",
+  async (language) => {
+    await act(async () => useWorkspaceUiStore.getState().updateDisplayPreferences({ theme: "light", language }));
+    const zh = language === "zh-CN";
+    const store = createLocalProjectStore();
+    const start = async () => {
+      await click(page.getByRole("button", { name: zh ? "打开项目" : "Open projects", exact: true }));
+      const dialog = page.getByRole("dialog", { name: zh ? "项目" : "Projects", exact: true });
+      const create = dialog.getByRole("button", { name: zh ? "新建项目" : "New project", exact: true });
+      const close = dialog.getByRole("button", { name: zh ? "关闭项目" : "Close projects", exact: true });
+      expect(create.element().getBoundingClientRect().right).toBeLessThanOrEqual(
+        close.element().getBoundingClientRect().left,
+      );
+      await click(create);
+    };
+    try {
+      expect(document.querySelector(".project-name")!.textContent).toContain("Untitled project");
+      await addPrimitive();
+      await start();
+      const confirm = page.getByRole("dialog", { name: zh ? "未保存的更改" : "Unsaved changes", exact: true });
+      await expect.element(confirm).toBeVisible();
+      await click(confirm.getByRole("button", { name: zh ? "取消" : "Cancel", exact: true }));
+      expect(document.querySelectorAll(".object-row")).toHaveLength(1);
+      await start();
+      await click(confirm.getByRole("button", { name: zh ? "保存并继续" : "Save and continue", exact: true }));
+      await expect.poll(() => document.querySelectorAll(".object-row").length).toBe(0);
+      expect(document.querySelector(".project-name")!.textContent).toContain(zh ? "未命名项目" : "Untitled project");
+      const [original] = await store.list();
+      expect((await store.load(original!.id)).objects).toHaveLength(1);
+      await expect.element(page.getByRole("button", { name: zh ? "撤销" : "Undo", exact: true })).toBeDisabled();
+      await addPrimitive("cylinder");
+      await click(page.getByRole("button", { name: zh ? "保存" : "Save", exact: true }));
+      await expect.poll(async () => (await store.list()).length).toBe(2);
+      expect((await store.load(original!.id)).objects).toHaveLength(1);
+      await addPrimitive();
+      await start();
+      await click(confirm.getByRole("button", { name: zh ? "放弃更改" : "Discard", exact: true }));
+      await expect.poll(() => document.querySelectorAll(".object-row").length).toBe(0);
+      expect(await store.list()).toHaveLength(2);
+      await start();
+      await expect.element(confirm).not.toBeInTheDocument();
+    } finally {
+      store.close?.();
+    }
+  },
+);
+
+test("abandoning an unsaved project removes its Modra session instead of creating other-project history", async () => {
+  saveAIProviderSettings({ protocol: "openai-compatible", baseURL: "https://models.example/v1", modelId: "test" });
+  mockModelFetch().mockResolvedValue(chatTextResponse("abandoned", "Temporary work"));
+  const repo = new IndexedDBModraRepository();
+  try {
+    await addPrimitive();
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    await fill(page.getByRole("textbox", { name: ai.en.message, exact: true }), "Temporary modeling question");
+    await click(page.getByRole("button", { name: ai.en.send, exact: true }));
+    await expect.element(page.getByText("Temporary work", { exact: true })).toBeVisible();
+    const [record] = await repo.list();
+    expect(record).toBeDefined();
+    await click(page.getByRole("button", { name: "Close Modra", exact: true }));
+    await click(page.getByRole("button", { name: "Open projects", exact: true }));
+    await click(page.getByRole("button", { name: "New project", exact: true }));
+    await click(page.getByRole("button", { name: "Discard", exact: true }));
+    await expect.poll(async () => await repo.load(record!.id)).toBeNull();
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    await click(page.getByRole("button", { name: ai.en.sessions, exact: true }));
+    expect(page.getByRole("dialog", { name: ai.en.sessions, exact: true }).element().textContent).not.toContain(
+      "Temporary",
+    );
+    expect(await repo.list()).toHaveLength(0);
+  } finally {
+    await repo.close();
+  }
+});
+
+test.each([390, 768, 1440])(
+  "keeps compact composer, pale placeholders and tight object menus at %ipx",
+  async (width) => {
+    await page.viewport(width, 900);
+    await addPrimitive();
+    if (width < 1000)
+      await click(
+        page
+          .getByRole("navigation", { name: "Workspace panels" })
+          .getByRole("button", { name: "Objects", exact: true }),
+      );
+    await click(page.getByRole("button", { name: /^Actions for / }));
+    const menu = page.getByRole("menu");
+    await expect.element(menu.getByRole("menuitem", { name: /^Hide / })).toHaveTextContent("Hide");
+    expect(menu.element().getBoundingClientRect().width).toBeLessThan(150);
+    await act(async () => userEvent.keyboard("{Escape}"));
+    await click(page.getByRole("button", { name: "Modra", exact: true }));
+    const input = page.getByRole("textbox", { name: ai.en.message, exact: true }).element();
+    expect(input.getBoundingClientRect().height).toBe(32);
+    expect(page.getByRole("button", { name: ai.en.send, exact: true }).element().getBoundingClientRect().width).toBe(
+      32,
+    );
+    expect(getComputedStyle(input, "::placeholder").color).not.toBe(getComputedStyle(input).color);
+    expect(getComputedStyle(document.querySelector(".ai-conversation-body")!).paddingTop).toBe("0px");
   },
 );

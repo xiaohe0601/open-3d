@@ -84,6 +84,11 @@
 }
 
 @layer base {
+  input::placeholder,
+  textarea::placeholder {
+    color: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+    opacity: 1;
+  }
   * {
     @apply box-border border-border outline-ring/50;
   }
@@ -141,84 +146,6 @@
   cursor: grabbing;
 }
 
-/* The viewport axis widget and view cube are small geometric overlays, not document content. */
-.axis {
-  position: absolute;
-  z-index: 1;
-  height: 1px;
-}
-
-.axis span {
-  position: absolute;
-  top: -8px;
-  right: -12px;
-  font:
-    11px "IBM Plex Sans",
-    sans-serif;
-}
-
-.axis-x {
-  top: 50%;
-  left: 50%;
-  width: 112px;
-  transform: rotate(-31deg);
-  transform-origin: left;
-  background: var(--destructive);
-}
-
-.axis-x span {
-  color: var(--destructive);
-}
-
-.axis-y {
-  top: 50%;
-  left: 50%;
-  width: 96px;
-  transform: rotate(32deg);
-  transform-origin: left;
-  background: var(--positive);
-}
-
-.axis-y span {
-  color: var(--positive);
-}
-
-.view-cube {
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  display: grid;
-  width: 51px;
-  height: 51px;
-  place-items: center;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--sheet);
-  color: var(--muted);
-  font:
-    11px "IBM Plex Sans",
-    sans-serif;
-}
-
-.view-cube i,
-.view-cube b {
-  position: absolute;
-  width: 12px;
-  height: 1px;
-  transform: rotate(-34deg);
-  background: var(--destructive);
-}
-
-.view-cube i {
-  margin: 17px 0 0 16px;
-}
-
-.view-cube b {
-  margin: 17px 16px 0 0;
-  transform: rotate(34deg);
-  background: var(--positive);
-}
-
 input[type="number"] {
   appearance: textfield;
 }
@@ -229,10 +156,6 @@ input[type="number"]::-webkit-outer-spin-button {
   appearance: none;
 }
 @layer components {
-  .ai-conversation {
-    @apply min-w-0;
-  }
-
   .properties-content,
   .object-list {
     @apply overscroll-contain;
@@ -273,11 +196,6 @@ input[type="number"]::-webkit-outer-spin-button {
 
   .context-bar {
     @apply shrink-0 flex-wrap gap-1 px-3 py-1;
-  }
-
-  .toolbar-separator,
-  .context-hint {
-    @apply hidden;
   }
 
   .viewport-tools [data-slot="button"] {
@@ -332,5 +250,72 @@ input[type="number"]::-webkit-outer-spin-button {
 
   .quick-tool {
     @apply px-1.5;
+  }
+}
+.modra-robot-head {
+  transform-origin: 12px 14px;
+}
+.modra-robot-eyes {
+  transform-origin: 12px 12px;
+}
+.modra-robot[data-activity="idle"] .modra-robot-eyes {
+  animation: modra-blink 6s infinite;
+}
+.modra-robot[data-activity="generating"] .modra-robot-head {
+  animation: modra-working 1.2s ease-in-out infinite;
+}
+.modra-robot[data-activity="generating"] .modra-robot-mouth {
+  animation: modra-blink 0.8s infinite;
+  transform-origin: 12px 16px;
+}
+.modra-robot[data-activity="completed"] .modra-robot-head {
+  animation: modra-nod 0.7s ease-in-out 2;
+}
+.modra-robot[data-activity="error"] .modra-robot-head {
+  animation: modra-shake 0.6s ease-in-out 2;
+}
+@keyframes modra-blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.1);
+  }
+}
+@keyframes modra-working {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-6deg);
+  }
+  50% {
+    transform: translateY(-1.5px) rotate(6deg);
+  }
+}
+@keyframes modra-nod {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(2px) rotate(-6deg);
+  }
+}
+@keyframes modra-shake {
+  0%,
+  100% {
+    transform: rotate(0);
+  }
+  25% {
+    transform: rotate(-10deg);
+  }
+  75% {
+    transform: rotate(10deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .modra-robot * {
+    animation: none !important;
   }
 }

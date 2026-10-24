@@ -9,10 +9,12 @@ export interface AIConnectionRetry {
 export interface AIConnectionRetryOptions {
   onRetry?: (retry: AIConnectionRetry | null) => void;
   initialDelayMs?: number;
+  assertActive?: () => void;
 }
 
 function isConnectionError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
+  if (error.name === "GatewayTransportError") return (error as Error & { retryable?: boolean }).retryable === true;
   return (
     error.name === "NetworkError" ||
     error.name === "TimeoutError" ||
@@ -42,12 +44,22 @@ export function createRetryingAIFetch(
 ): typeof fetch {
   return async (input, init) => {
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    // Request bodies are opaque streams, even when originally constructed from JSON.
+    // Never buffer/replay them; callers can supply a reusable body explicitly in init.
+    const replayable =
+      !(init?.body instanceof ReadableStream) &&
+      !(input instanceof Request && (input.bodyUsed || (input.body && init?.body == null)));
     for (let attempt = 0; ; attempt++) {
       signal?.throwIfAborted();
+      options.assertActive?.();
       let retryAfterMs = 0;
       try {
-        const response = await fetchRequest(input, init);
-        if (attempt >= MAX_AI_CONNECTION_RETRIES || ![408, 429, 500, 502, 503, 504].includes(response.status)) {
+        const response = await fetchRequest(input instanceof Request && replayable ? input.clone() : input, init);
+        if (
+          !replayable ||
+          attempt >= MAX_AI_CONNECTION_RETRIES ||
+          ![408, 429, 500, 502, 503, 504].includes(response.status)
+        ) {
           options.onRetry?.(null);
           return response;
         }
@@ -59,7 +71,8 @@ export function createRetryingAIFetch(
         }
         void response.body?.cancel().catch(() => {});
       } catch (error) {
-        if (signal?.aborted || attempt >= MAX_AI_CONNECTION_RETRIES || !isConnectionError(error)) throw error;
+        if (!replayable || signal?.aborted || attempt >= MAX_AI_CONNECTION_RETRIES || !isConnectionError(error))
+          throw error;
       }
       const retry = {
         attempt: attempt + 1,

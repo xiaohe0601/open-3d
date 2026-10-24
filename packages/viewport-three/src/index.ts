@@ -635,6 +635,38 @@ export class ThreeViewport {
     this.transformHandler = handler;
   }
 
+  async capture(maxDimension = 1024): Promise<Blob> {
+    if (
+      !this.host ||
+      !this.projection ||
+      this.renderer.getContext().isContextLost() ||
+      !Number.isFinite(maxDimension) ||
+      maxDimension < 1 ||
+      maxDimension > 2048
+    )
+      throw new Error("viewport-capture-unavailable");
+    const source = this.renderer.domElement;
+    if (!source.width || !source.height) throw new Error("viewport-capture-unavailable");
+    const scale = Math.min(1, maxDimension / Math.max(source.width, source.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(source.width * scale));
+    canvas.height = Math.max(1, Math.round(source.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("viewport-capture-unavailable");
+    // Copy synchronously after rendering: the WebGL drawing buffer is not preserved.
+    this.renderer.render(this.projection.scene, this.projection.camera);
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (value) => (value ? resolve(value) : reject(new Error("viewport-capture-unavailable"))),
+        "image/jpeg",
+        0.9,
+      );
+    });
+    if (!blob.size || blob.size > 5 * 1024 * 1024) throw new Error("viewport-capture-size");
+    return blob;
+  }
+
   dispose(): void {
     this.viewChangeHandler = undefined;
     this.resizeObserver?.disconnect();

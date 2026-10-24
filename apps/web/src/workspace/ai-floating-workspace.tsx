@@ -1,3 +1,5 @@
+import { ModraRobot, type ModraActivity } from "../modra/components/launcher-robot";
+import { useLauncherActivity } from "../modra/controller/use-launcher-activity";
 import {
   lazy,
   memo,
@@ -12,7 +14,7 @@ import {
 import { autoUpdate, offset, shift, size, useFloating } from "@floating-ui/react-dom";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import { Bot, X } from "lucide-react";
+import { Minus } from "lucide-react";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -30,12 +32,15 @@ const AIConversationPanel = lazy(() =>
   import("./ai-conversation-panel").then((module) => ({ default: memo(module.AIConversationPanel) })),
 );
 
-type AIFloatingWorkspaceProps = Pick<
-  ComponentProps<typeof AIConversationPanel>,
-  "document" | "onPreviewDocument" | "onAcceptProposal"
->;
+type AIFloatingWorkspaceProps = Pick<ComponentProps<typeof AIConversationPanel>, "modelingHost">;
 
-function FloatingAITrigger({ onReferenceChange }: { onReferenceChange: (node: HTMLButtonElement | null) => void }) {
+function FloatingAITrigger({
+  onReferenceChange,
+  activity,
+}: {
+  onReferenceChange: (node: HTMLButtonElement | null) => void;
+  activity: ModraActivity;
+}) {
   const { t } = useTranslation("workspace");
   const [position, setPosition] = useState<FloatingPosition | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -79,7 +84,8 @@ function FloatingAITrigger({ onReferenceChange }: { onReferenceChange: (node: HT
           className="ai-floating-trigger fixed right-6 bottom-6 z-[901] size-11 touch-none cursor-grab rounded-full border border-border bg-primary p-0 text-primary-foreground shadow-md hover:bg-primary-hover active:cursor-grabbing max-[1000px]:bottom-36"
           style={position ? { left: position.x, top: position.y, right: "auto", bottom: "auto" } : undefined}
           aria-label={t("aiChat")}
-          aria-describedby="ai-floating-instructions"
+          aria-describedby="ai-floating-instructions ai-floating-status"
+          data-modra-activity={activity}
           title={t("dragAI")}
           onPointerDown={(event) => {
             if (!event.isPrimary || event.button !== 0) return;
@@ -123,7 +129,10 @@ function FloatingAITrigger({ onReferenceChange }: { onReferenceChange: (node: HT
             setPosition(constrain({ x: rect.x + delta[0] * step, y: rect.y + delta[1] * step }));
           }}
         >
-          <Bot className="size-5" />
+          <ModraRobot activity={activity} />
+          <span id="ai-floating-status" className="sr-only">
+            Modra: {t(`modraActivity.${activity}`)}
+          </span>
           <span id="ai-floating-instructions" className="sr-only">
             {t("dragAI")}
           </span>
@@ -137,8 +146,10 @@ function FloatingAITrigger({ onReferenceChange }: { onReferenceChange: (node: HT
 export function AIFloatingWorkspace(props: AIFloatingWorkspaceProps) {
   const { t } = useTranslation("workspace");
   const [open, setOpen] = useState(false);
+  const { activity, reportActivity } = useLauncherActivity(open);
   const [opened, setOpened] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [headerTarget, setHeaderTarget] = useState<HTMLDivElement | null>(null);
   const [settingsRevision, setSettingsRevision] = useState(0);
   const preferredPlacement = useRef<AIChatPlacement | null>(null);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
@@ -166,12 +177,24 @@ export function AIFloatingWorkspace(props: AIFloatingWorkspaceProps) {
       size({
         padding: AI_CHAT_LAYOUT.inset,
         apply({ availableWidth, availableHeight, elements: positioned }) {
+          const viewport = positioned.floating.ownerDocument.documentElement;
+          const compact = viewport.clientWidth < 640 && viewport.clientHeight < 640;
           Object.assign(positioned.floating.style, {
-            width: `${Math.max(0, Math.min(AI_CHAT_LAYOUT.width, availableWidth))}px`,
-            height: `${Math.max(0, Math.min(AI_CHAT_LAYOUT.height, availableHeight))}px`,
+            width: `${Math.max(0, Math.min(AI_CHAT_LAYOUT.width, compact ? viewport.clientWidth - AI_CHAT_LAYOUT.inset * 2 : availableWidth))}px`,
+            height: `${Math.max(0, Math.min(AI_CHAT_LAYOUT.height, compact ? viewport.clientHeight - AI_CHAT_LAYOUT.inset * 2 : availableHeight))}px`,
           });
         },
       }),
+      {
+        name: "compactViewport",
+        fn({ elements: positioned }) {
+          const viewport = positioned.floating.ownerDocument.documentElement;
+          // On short phones, use the reading area rather than squeezing chat above the launcher.
+          return viewport.clientWidth < 640 && viewport.clientHeight < 640
+            ? { x: AI_CHAT_LAYOUT.inset, y: AI_CHAT_LAYOUT.inset }
+            : {};
+        },
+      },
     ],
   });
 
@@ -199,7 +222,7 @@ export function AIFloatingWorkspace(props: AIFloatingWorkspaceProps) {
         if (next) setOpened(true);
       }}
     >
-      <FloatingAITrigger onReferenceChange={refs.setReference} />
+      <FloatingAITrigger onReferenceChange={refs.setReference} activity={activity} />
       {opened && (
         <DialogContent
           showBackdrop={false}
@@ -208,15 +231,16 @@ export function AIFloatingWorkspace(props: AIFloatingWorkspaceProps) {
           data-testid="ai-floating-dialog"
           data-placement={placement}
           style={{ ...floatingStyles, transformOrigin, visibility: open && !isPositioned ? "hidden" : undefined }}
-          className="ai-floating-dialog fixed z-[900] flex h-[min(600px,calc(100dvh-32px))] w-[min(420px,calc(100vw-32px))] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-sheet text-foreground shadow-xs transition-[opacity,scale] duration-180 ease-out data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0 data-closed:pointer-events-none motion-reduce:transition-none [&[hidden]]:hidden"
+          className="ai-floating-dialog fixed z-[900] flex h-[min(600px,calc(100dvh-32px))] w-[min(420px,calc(100vw-32px))] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-sheet text-foreground shadow-xs transition-[opacity,scale] duration-180 ease-out data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0 data-closed:pointer-events-none motion-reduce:transition-none [&[hidden]]:hidden [@media(max-width:639px)_and_(max-height:639px)]:z-[902]"
         >
-          <div className="flex min-h-12 shrink-0 items-center justify-between border-b border-border px-4">
-            <DialogTitle className="text-[15px] font-semibold">{t("aiChat")}</DialogTitle>
+          <div className="flex min-h-12 shrink-0 items-center gap-1 border-b border-border pl-3 pr-1">
+            <DialogTitle className="shrink-0 text-[15px] font-semibold">{t("aiChat")}</DialogTitle>
+            <div ref={setHeaderTarget} className="flex min-w-0 flex-1" />
             <DialogDescription className="sr-only">{t("floatingAIDescription")}</DialogDescription>
             <DialogClose
               render={<Button variant="ghost" size="icon" className="size-11 text-muted" aria-label={t("closeAI")} />}
             >
-              <X size={18} />
+              <Minus size={18} />
             </DialogClose>
           </div>
           <div className="ai-floating-content flex min-h-0 flex-1 p-3">
@@ -224,6 +248,8 @@ export function AIFloatingWorkspace(props: AIFloatingWorkspaceProps) {
               <AIConversationPanel
                 {...props}
                 active={open}
+                onActivityChange={reportActivity}
+                headerTarget={headerTarget}
                 settingsRevision={settingsRevision}
                 onOpenSettings={openSettings}
               />

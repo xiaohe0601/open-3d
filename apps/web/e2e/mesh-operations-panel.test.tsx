@@ -5,6 +5,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { initializeI18n } from "../src/i18n";
 import { MeshOperationsPanel } from "../src/workspace/mesh-operations-panel";
 import { meshOperations, type MeshOperation } from "../src/workspace/modeling";
+import "../src/style.css";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -28,6 +29,7 @@ function PanelHarness() {
 }
 
 beforeEach(async () => {
+  await page.viewport(1440, 900);
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
   await initializeI18n("en");
   apply.mockClear();
@@ -57,6 +59,7 @@ test("retains parameter controls for the deferred mesh-operation catalog", async
   ];
   for (const [label, expected] of controls) {
     await act(async () => userEvent.click(page.getByRole("combobox", { name: "Operation", exact: true })));
+    await expect.element(page.getByRole("option", { name: label, exact: true })).toBeVisible();
     await act(async () => userEvent.click(page.getByRole("option", { name: label, exact: true })));
     await expect.element(page.getByText(expected, { exact: true })).toBeVisible();
   }
@@ -65,6 +68,7 @@ test("retains parameter controls for the deferred mesh-operation catalog", async
 test("routes each deferred catalog selection to its apply callback", async () => {
   for (const [operation, label] of meshOperations) {
     await act(async () => userEvent.click(page.getByRole("combobox", { name: "Operation", exact: true })));
+    await expect.element(page.getByRole("option", { name: label, exact: true })).toBeVisible();
     await act(async () => userEvent.click(page.getByRole("option", { name: label, exact: true })));
     await act(async () => userEvent.click(page.getByRole("button", { name: "Apply operation", exact: true })));
     expect(apply).toHaveBeenLastCalledWith(operation, {});

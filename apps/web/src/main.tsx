@@ -13,5 +13,5 @@ void initializeI18n(preferenceController.resolved.language).then(() => {
     throw new Error("Missing #app mount point.");
   }
 
-  createRoot(mountPoint).render(<WorkspaceApp />);
+  createRoot(mountPoint).render(<WorkspaceApp projectRouting />);
 });

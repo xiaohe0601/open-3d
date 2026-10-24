@@ -1,6 +1,7 @@
 export const projects = {
   en: {
     localProjects: "Projects",
+    newProject: "New project",
     rename: "Rename",
     renameProject: "Rename project",
     projectName: "Project name",
@@ -12,7 +13,16 @@ export const projects = {
     duplicated: "Project copy saved in this browser",
     delete: "Delete",
     deleteTitle: "Delete project?",
-    deleteDescription: "Deletion cannot be undone. Please proceed with caution.",
+    deleteDescription: "Deletes this saved project and its associated Modra sessions. This cannot be undone.",
+    pendingDeletion: "Pending project deletion",
+    removedProject: "Removed project",
+    cleanupPending: "The project was removed. Its Modra data is sealed; retry to finish local cleanup.",
+    deletionPending:
+      "Deletion is not complete. Modra history is sealed and retained. Retry, or cancel when available to unlock it under new ownership.",
+    retryDeletion: "Retry deletion",
+    cancelDeletion: "Cancel deletion and unlock history",
+    sessionStorageFailed:
+      "Could not update Modra storage. Deletion cannot proceed without a durable fence. If removal already started, its data stays sealed; retry cleanup from Projects.",
     deleted: "Saved project deleted. Any open scene is kept in the workspace.",
     search: "Search projects",
     noResults: "No projects match your search",
@@ -34,6 +44,9 @@ export const projects = {
     discard: "Discard",
     saveAndContinue: "Save and continue",
     opened: "{{name}} opened",
+    savedWithoutModra:
+      "Scene saved. Modra storage is unavailable; its local history could not be linked to this project.",
+    openedWithoutModra: "{{name}} opened. Modra history is unavailable; the scene remains editable.",
     downloaded: "{{format}} downloaded",
     exportOmitted: "Export complete. {{details}}.",
     exportFailed:
@@ -67,6 +80,7 @@ export const projects = {
   },
   "zh-CN": {
     localProjects: "项目",
+    newProject: "新建项目",
     rename: "重命名",
     renameProject: "重命名项目",
     projectName: "项目名称",
@@ -78,7 +92,15 @@ export const projects = {
     duplicated: "项目副本已保存在此浏览器",
     delete: "删除",
     deleteTitle: "删除项目？",
-    deleteDescription: "删除后无法恢复，请谨慎操作。",
+    deleteDescription: "将删除此项目存档及其关联的 Modra 会话，此操作不可撤销。",
+    pendingDeletion: "待完成的项目删除",
+    removedProject: "已移除的项目",
+    cleanupPending: "项目已移除，其 Modra 数据仍被封锁，请重试以完成本地清理。",
+    deletionPending: "删除尚未完成，Modra 历史已封锁并保留。请重试，或在可用时取消删除，以新的写入权解锁历史。",
+    retryDeletion: "重试删除",
+    cancelDeletion: "取消删除并解锁历史",
+    sessionStorageFailed:
+      "无法更新 Modra 存储。未建立持久封锁前不会删除项目。如果已开始移除，相关数据将保持封锁，请在项目列表中重试清理。",
     deleted: "已删除项目存档，打开的场景仍保留在工作区中。",
     search: "搜索项目",
     noResults: "没有匹配的项目",
@@ -87,7 +109,7 @@ export const projects = {
     fileError: "文件操作失败",
     closeFileError: "关闭文件错误提示",
     transferDescription:
-      "导出 open3d 可获得便携的可编辑项目；GLB/glTF 仅交换支持的场景内容，不保留编辑器状态或不支持的扩展。",
+      "导出 open3d 以获得便携的可编辑项目；GLB/glTF 仅交换支持的场景内容，不保留编辑器状态或不支持的扩展。",
     close: "关闭项目",
     files: "项目或 glTF 文件",
     import: "导入项目 / GLB / glTF",
@@ -100,6 +122,8 @@ export const projects = {
     discard: "放弃更改",
     saveAndContinue: "保存并继续",
     opened: "已打开 {{name}}",
+    savedWithoutModra: "场景已保存。Modra 存储不可用，无法将本地历史关联到此项目。",
+    openedWithoutModra: "已打开 {{name}}。Modra 历史不可用，仍可继续编辑场景。",
     downloaded: "已下载 {{format}}",
     exportOmitted: "导出完成。{{details}}。",
     exportFailed: "无法导出为 {{format}}，当前项目未更改。请尝试导出便携 open3d 副本。",

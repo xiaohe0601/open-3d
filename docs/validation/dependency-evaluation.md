@@ -99,7 +99,7 @@ Run date: 2026-10-21
 
 | Check | Result |
 | --- | --- |
-| Frozen-lockfile install | Passed with pnpm 11.28.6; the lockfile resolution stayed unchanged and Vite+ reported that all 520 lockfile entries passed its supply-chain policy check. Dependencies were installed to an isolated `/private/tmp` modules/store path because pnpm refused to purge the existing workspace `node_modules` without an interactive terminal. |
+| Frozen-lockfile install | Passed with pnpm 11.28.6; the lockfile resolution stayed unchanged and Vite+ reported that all 520 lockfile entries passed its supply-chain policy check. Dependencies were installed in an isolated temporary modules/store path because pnpm refused to purge the existing workspace `node_modules` without an interactive terminal. |
 | Vite+ CI task graph | Passed: production build, 107 unit/property tests, 36 Chromium E2E tests, Oxlint, Oxfmt, root typecheck, and Web app typecheck. One opt-in performance profile test is skipped in the default suite. |
 | Production dependency vulnerability audit | `pnpm audit --prod`: no known vulnerabilities found. |
 | Production dependency licenses | 36 non-private packages enumerated: 25 MIT, 8 Apache-2.0, 1 OFL-1.1, 1 ISC, and 1 `(AFL-2.1 OR BSD-3-Clause)`. The complete package inventory and included license texts are in [`../third-party-licenses/NOTICE.md`](../third-party-licenses/NOTICE.md). Private workspace packages are excluded from third-party notices. |

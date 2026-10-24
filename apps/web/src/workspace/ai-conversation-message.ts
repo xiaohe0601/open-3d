@@ -1,4 +1,3 @@
-import type { OpenAICompatibleChatMessage } from "@open-3d/ai";
 import type { CommandRequest } from "@open-3d/model-core";
 
 export interface ConversationImage {
@@ -9,14 +8,22 @@ export interface ConversationImage {
 }
 
 export interface ConversationMessage {
-  id: number;
+  createdAt?: number;
+  parts?: readonly import("@open-3d/ai/runtime").ModraMessagePart[];
+  affectedObjects?: readonly import("@open-3d/ai/runtime").AffectedObject[];
+  plan?: import("@open-3d/ai/runtime").TaskPlan;
+  taskMode?: "plan" | "build";
+  references?: (import("@open-3d/ai/runtime").ObjectReference & { currentName?: string; mutationVersion?: number })[];
+  id: string | number;
   role: "user" | "assistant";
   text: string;
   images?: ConversationImage[];
   proposals?: CommandRequest[];
-  proposalStatus?: "pending" | "accepted" | "rejected";
+  changeSetId?: string;
+  proposalStatus?: "pending" | "accepted" | "rejected" | "stale";
   proposalReady?: boolean;
   proposalInterrupted?: boolean;
+  applicationEffect?: "present" | "undone" | "unknown" | "obsolete";
   toolCalls?: ConversationToolCall[];
 }
 
@@ -28,7 +35,7 @@ export interface ConversationToolCall {
   output?: unknown;
 }
 
-export const MAX_CONVERSATION_IMAGES = 6;
+export const MAX_CONVERSATION_IMAGES = 5;
 export const MAX_CONVERSATION_IMAGE_BYTES = 5 * 1024 * 1024;
 export const CONVERSATION_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
@@ -54,32 +61,3 @@ export async function readConversationImage(file: File): Promise<ConversationIma
   });
   return { id: crypto.randomUUID(), name: file.name, mediaType: file.type, dataUrl };
 }
-
-export function conversationHistory(messages: readonly ConversationMessage[]): OpenAICompatibleChatMessage[] {
-  return messages
-    .filter((message) => message.text.trim().length > 0 || message.images?.length)
-    .map((message): OpenAICompatibleChatMessage => {
-      if (message.role === "user" && message.images?.length) {
-        return {
-          role: "user",
-          content: [
-            ...(message.text ? [{ type: "text" as const, text: message.text }] : []),
-            ...message.images.map((image) => ({
-              type: "image" as const,
-              image: image.dataUrl,
-              mediaType: image.mediaType,
-            })),
-          ],
-        };
-      }
-      return { role: message.role, content: message.text };
-    });
-}
-
-export const modelingContinuation: OpenAICompatibleChatMessage = {
-  role: "user",
-  content:
-    "Continue the original modeling task using the current scene. The user approved and applied the proposed changes above. " +
-    "Do not repeat completed work. If the original task is complete, briefly confirm completion. " +
-    "Otherwise, continue by proposing the next necessary modeling changes for review.",
-};

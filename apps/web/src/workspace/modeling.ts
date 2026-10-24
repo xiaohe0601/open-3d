@@ -31,7 +31,7 @@ export interface TransformConfiguration {
 export const emptyDocument = (): ModelingDocument => ({
   schemaVersion: 1,
   id: "open-3d-document",
-  name: "Untitled scene",
+  name: "Untitled project",
   activeSceneId: "scene-main",
   scenes: [{ id: "scene-main", name: "Scene", objectIds: [] }],
   objects: [],

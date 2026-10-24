@@ -123,6 +123,7 @@ test("validates required provider fields and makes API key optional", () => {
   assert.equal(valid.success, true);
   assert.deepEqual(valid.data, {
     protocol: "openai-compatible",
+    route: "direct",
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
     apiKey: undefined,
@@ -190,6 +191,7 @@ test("removes only the saved API credential and retains provider settings", () =
   assert.equal(removeAIProviderCredential(storage), false);
   assert.deepEqual(loadAIProviderSettings(storage), {
     protocol: "openai-compatible",
+    route: "direct",
     baseURL: "https://models.example.test/v1",
     modelId: "test-model",
   });

@@ -47,3 +47,7 @@ coverage/
 *.sln
 *.sw?
 .vitest/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example

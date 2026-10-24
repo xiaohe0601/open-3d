@@ -116,3 +116,37 @@ test("does not replay a response when an established stream disconnects", async 
   await expect(response.text()).rejects.toThrow("Connection lost");
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+test("never retries stream-backed bodies, including opaque Request bodies", async () => {
+  for (const requestBody of ["init", "request"]) {
+    const fetch = vi.fn().mockResolvedValue(new Response("busy", { status: 503 }));
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{}"));
+        controller.close();
+      },
+    });
+    const retry = createRetryingAIFetch(fetch, { initialDelayMs: 0 });
+    if (requestBody === "request") {
+      await retry(new Request("https://models.example.test", { method: "POST", body, duplex: "half" }));
+    } else {
+      await retry("https://models.example.test", { method: "POST", body });
+    }
+    expect(fetch).toHaveBeenCalledTimes(1);
+  }
+});
+
+test("checks ownership and credentials again before retry dispatch", async () => {
+  const fetch = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+  let valid = true;
+  const retry = createRetryingAIFetch(fetch, {
+    initialDelayMs: 0,
+    assertActive() {
+      if (!valid) throw new Error("credentials-changed");
+    },
+    onRetry() {
+      valid = false;
+    },
+  });
+  await expect(retry("https://models.example.test")).rejects.toThrow("credentials-changed");
+  expect(fetch).toHaveBeenCalledTimes(1);
+});

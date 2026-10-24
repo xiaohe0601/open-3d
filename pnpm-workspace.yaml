@@ -10,6 +10,9 @@ peerDependencyRules:
 
 shamefullyHoist: true
 shellEmulator: true
+allowBuilds:
+  esbuild: true
+  workerd: true
 
 packages:
   - apps/*

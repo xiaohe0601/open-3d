@@ -20,14 +20,16 @@ export function AIToolCalls({ calls }: { calls: ConversationToolCall[] }) {
             <li key={call.id} data-ai-tool-call data-tool-status={call.status} className="min-w-0">
               <details className="min-w-0 text-[13px]">
                 <summary className="cursor-pointer rounded py-1 text-muted focus-visible:outline-2 focus-visible:outline-ring">
-                  <span className="ml-1 inline-flex max-w-[90%] items-start gap-1.5 align-top">
+                  <span className="ml-1 inline-flex max-w-[90%] items-center gap-1.5 align-middle">
                     <Icon
                       aria-hidden
-                      className={`mt-0.5 size-3.5 shrink-0 ${busy ? "animate-spin motion-reduce:animate-none" : ""}`}
+                      className={`size-3.5 shrink-0 ${busy ? "animate-spin motion-reduce:animate-none" : ""}`}
                     />
-                    <span className="min-w-0">
-                      <code className="break-all text-foreground">{call.name}</code>
-                      <span className="mt-0.5 block">{t(`toolStatus.${call.status}`)}</span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <code className="truncate text-foreground" title={call.name}>
+                        {call.name}
+                      </code>
+                      <span className="shrink-0 text-xs">{t(`toolStatus.${call.status}`)}</span>
                     </span>
                   </span>
                 </summary>

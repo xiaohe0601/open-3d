@@ -10,7 +10,8 @@
     "lint": "vp lint",
     "format-check": "vp run workspace-format-check",
     "typecheck": "vp run workspace-typecheck",
-    "ci": "vp run workspace-ci"
+    "ci": "vp run workspace-ci",
+    "deploy:ai-gateway": "node apps/ai-gateway/cli/deploy.mjs"
   },
   "devDependencies": {
     "@vitest/browser-playwright": "5.0.5",

@@ -1,4 +1,4 @@
-import { Copy, Eye, EyeOff, FolderOpen, Redo2, Save, Trash2, Undo2 } from "lucide-react";
+import { Copy, Ellipsis, Eye, EyeOff, FolderOpen, Redo2, Save, Trash2, Undo2 } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ModelingObject } from "@open-3d/model-core";
 import { ObjectIcon } from "./object-icon";
@@ -8,6 +8,12 @@ import type { Primitive } from "./modeling";
 import { WorkspacePreferenceControls } from "./workspace-preference-controls";
 import { Button, buttonVariants } from "../components/ui/button";
 import { useTranslation } from "react-i18next";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../components/ui/dropdown-menu";
 
 export interface SceneHierarchyItem {
   id: string;
@@ -186,42 +192,49 @@ export function SceneHierarchyPanel({
               title={item.name}
             >
               <span className="object-glyph w-[15px] shrink-0 text-center text-sm text-muted">
-                <ObjectIcon mesh={item.mesh} className="size-3.5" />
+                {item.visible ? (
+                  <ObjectIcon mesh={item.mesh} className="size-3.5" />
+                ) : (
+                  <EyeOff className="size-3.5 text-warning" />
+                )}
               </span>
               <span className="object-label min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                 {item.name}
               </span>
             </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className={`h-[25px] w-[25px] shrink-0 rounded bg-transparent text-[13px] text-muted opacity-[0.85] hover:bg-soft hover:opacity-100 ${item.visible ? "" : "text-warning opacity-75"}`}
-              onClick={() => onToggleVisibility(item)}
-              aria-label={t(item.visible ? "hideNamedObject" : "showNamedObject", { name: item.name })}
-              title={t(item.visible ? "hideObject" : "showObject")}
-            >
-              {item.visible ? <Eye size={14} /> : <EyeOff size={14} />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="grid h-[25px] w-[23px] shrink-0 place-items-center rounded bg-transparent text-muted hover:bg-soft"
-              onClick={() => onDuplicateObject(item)}
-              aria-label={t("duplicateObject", { name: item.name })}
-              title={t("duplicateObject", { name: item.name })}
-            >
-              <Copy size={13} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="grid h-[25px] w-[23px] shrink-0 place-items-center rounded bg-transparent text-destructive hover:bg-negative-soft"
-              onClick={() => onDeleteObject(item)}
-              aria-label={t("deleteObject", { name: item.name })}
-              title={t("deleteObject", { name: item.name })}
-            >
-              <Trash2 size={13} />
-            </Button>
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger
+                render={<Button variant="ghost" size="icon-sm" className="size-[25px] text-muted" />}
+                aria-label={t("objectActions", { name: item.name })}
+                title={t("objectActions", { name: item.name })}
+              >
+                <Ellipsis className="size-3.5" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-0 w-max max-w-[calc(100vw-24px)]">
+                <DropdownMenuItem
+                  onClick={() => onToggleVisibility(item)}
+                  aria-label={t(item.visible ? "hideNamedObject" : "showNamedObject", { name: item.name })}
+                >
+                  {item.visible ? <Eye /> : <EyeOff />}
+                  {t(item.visible ? "hideObject" : "showObject")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => onDuplicateObject(item)}
+                  aria-label={t("duplicateObject", { name: item.name })}
+                >
+                  <Copy />
+                  {t("objectDuplicate")}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-destructive data-highlighted:bg-negative-soft data-highlighted:text-destructive"
+                  onClick={() => onDeleteObject(item)}
+                  aria-label={t("deleteObject", { name: item.name })}
+                >
+                  <Trash2 />
+                  {t("objectDelete")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         ))}
       </div>

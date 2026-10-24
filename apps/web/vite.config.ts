@@ -7,7 +7,14 @@ import { playwright } from "vite-plus/test/browser-playwright";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   optimizeDeps: {
-    include: ["@base-ui/react/collapsible", "@base-ui/react/menu", "@base-ui/react/tooltip"],
+    include: [
+      "@base-ui/react/collapsible",
+      "@base-ui/react/menu",
+      "@base-ui/react/popover",
+      "@ai-sdk/openai",
+      "@ai-sdk/anthropic",
+      "@ai-sdk/google",
+    ],
   },
   resolve: {
     alias: {

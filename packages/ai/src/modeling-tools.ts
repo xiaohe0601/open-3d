@@ -1,33 +1,12 @@
 import { tool, type ToolSet } from "ai";
-import {
-  createCoreCommandHandlers,
-  getCommandDescriptor,
-  getQueryDescriptor,
-  MODELING_COMMANDS,
-  MODELING_CONTRACT_VERSION,
-  MODELING_QUERIES,
-  ModelingContractError,
-  ModelingCommandProcessor,
-  queryModelingDocument,
-  validateCommandArguments,
-  validateQueryArguments,
-} from "@open-3d/model-core";
-import type { CommandRequest, ModelingDocument, OperationEligibility, ValueSchema } from "@open-3d/model-core";
+import { MODELING_COMMANDS, MODELING_QUERIES } from "@open-3d/model-core";
+import type { CommandRequest, ModelingDocument, ValueSchema } from "@open-3d/model-core";
 import { z } from "zod";
 
-export type AIModelingToolResult =
-  | {
-      kind: "query";
-      queryId: string;
-      result: unknown;
-    }
-  | {
-      kind: "command-proposal";
-      commandId: string;
-      arguments: Record<string, unknown>;
-      eligible: true;
-      requiresUserReview: true;
-    };
+export { executeAIModelingTool } from "./tools/modeling-session.ts";
+export type { AIModelingToolResult } from "./tools/modeling-session.ts";
+import { createModelingToolSession } from "./tools/modeling-session.ts";
+import { taskPlanSchema } from "./runtime/plan.ts";
 
 function valueSchemaToZod(schema: ValueSchema): z.ZodType {
   let result: z.ZodType;
@@ -85,93 +64,48 @@ function valueSchemaToZod(schema: ValueSchema): z.ZodType {
   return result;
 }
 
-function toolName(kind: "command" | "query", id: string): string {
-  return `${kind}_${id.replaceAll(".", "_")}`;
-}
-
-const commandToolIds = new Map(MODELING_COMMANDS.map(({ id }) => [toolName("command", id), id]));
-const queryToolIds = new Map(MODELING_QUERIES.map(({ id }) => [toolName("query", id), id]));
-
-export function executeAIModelingTool(
-  document: ModelingDocument,
-  registeredToolName: string,
-  argumentsValue: unknown,
-): AIModelingToolResult {
-  const queryId = queryToolIds.get(registeredToolName);
-  if (queryId) {
-    getQueryDescriptor(queryId);
-    validateQueryArguments(queryId, argumentsValue, MODELING_CONTRACT_VERSION);
-    return {
-      kind: "query",
-      queryId,
-      result: queryModelingDocument(document, queryId, argumentsValue),
-    };
-  }
-
-  const commandId = commandToolIds.get(registeredToolName);
-  if (!commandId) {
-    throw new ModelingContractError(
-      "unknown-command",
-      `AI tool "${registeredToolName}" is not registered in the modeling catalog.`,
-      { toolName: registeredToolName },
-    );
-  }
-
-  getCommandDescriptor(commandId);
-  validateCommandArguments(commandId, argumentsValue, MODELING_CONTRACT_VERSION);
-  const eligibility = queryModelingDocument(document, "operation.getEligibility", {
-    commandId,
-    arguments: argumentsValue,
-  }) as OperationEligibility;
-  if (!eligibility.eligible) {
-    throw new ModelingContractError(
-      "operation-ineligible",
-      `Command "${commandId}" is not currently eligible for this document.`,
-      { commandId, blockers: eligibility.blockers },
-    );
-  }
-
-  return {
-    kind: "command-proposal",
-    commandId,
-    arguments: structuredClone(argumentsValue as Record<string, unknown>),
-    eligible: true,
-    requiresUserReview: true,
-  };
-}
-
 export interface AIModelingToolsOptions {
   onCommandProposal?: (request: CommandRequest, previewDocument: ModelingDocument) => void;
 }
 
+function toolName(kind: "command" | "query", id: string): string {
+  return `${kind}_${id.replaceAll(".", "_")}`;
+}
+
 export function createAIModelingTools(document: ModelingDocument, options: AIModelingToolsOptions = {}): ToolSet {
+  const session = createModelingToolSession(document, options);
+  return createModelingToolDefinitions((name, input) => session.execute(name, input));
+}
+
+export function createModelingToolDefinitions(
+  execute: (name: string, input: unknown, callId: string) => unknown,
+  mode: "plan" | "build" = "build",
+  withPlan = false,
+): ToolSet {
   const registeredTools: ToolSet = {};
-  const previewProcessor = new ModelingCommandProcessor(document, {
-    handlers: createCoreCommandHandlers(),
-  });
+  if (withPlan)
+    registeredTools.update_task_plan = tool({
+      description:
+        "Publish or update a user-facing task plan, not hidden reasoning. Use stable ordered step IDs, at most 20 short labels. Step completion does not mean scene changes were applied.",
+      inputSchema: taskPlanSchema,
+      execute: (input, context) => execute("update_task_plan", input, context.toolCallId),
+    });
 
   for (const descriptor of MODELING_QUERIES) {
     const name = toolName("query", descriptor.id);
     registeredTools[name] = tool({
       description: `${descriptor.description} Query id: ${descriptor.id}.`,
       inputSchema: valueSchemaToZod(descriptor.parameters),
-      execute: (argumentsValue) => executeAIModelingTool(previewProcessor.getDocumentSnapshot(), name, argumentsValue),
+      execute: (argumentsValue, context) => execute(name, argumentsValue, context.toolCallId),
     });
   }
 
-  for (const descriptor of MODELING_COMMANDS) {
+  for (const descriptor of mode === "plan" ? [] : MODELING_COMMANDS) {
     const name = toolName("command", descriptor.id);
     registeredTools[name] = tool({
       description: `${descriptor.description} This only proposes a command for user review; it never edits the document. Command id: ${descriptor.id}.`,
       inputSchema: valueSchemaToZod(descriptor.parameters),
-      execute: (argumentsValue) => {
-        const request = { commandId: descriptor.id, arguments: argumentsValue };
-        const result = executeAIModelingTool(previewProcessor.getDocumentSnapshot(), name, argumentsValue);
-        if (result.kind !== "command-proposal") return result;
-        previewProcessor.executeCommand(request);
-        options.onCommandProposal?.(request, previewProcessor.getDocumentSnapshot());
-        return result;
-      },
+      execute: (argumentsValue, context) => execute(name, argumentsValue, context.toolCallId),
     });
   }
 

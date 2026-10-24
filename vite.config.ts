@@ -36,6 +36,9 @@ export default defineConfig({
       "workspace-typecheck": {
         command: "vp check --no-fmt --no-lint",
       },
+      "gateway-test": { command: "pnpm -C apps/ai-gateway test", cache: false },
+      "gateway-typecheck": { command: "pnpm -C apps/ai-gateway typecheck" },
+      "gateway-dry-run": { command: "pnpm -C apps/ai-gateway dry-run", cache: false },
       "workspace-ci": {
         command: "node -e 'console.log(\"CI task graph completed\")'",
         dependsOn: [
@@ -46,6 +49,9 @@ export default defineConfig({
           "workspace-format-check",
           "workspace-typecheck",
           "workspace-web-typecheck",
+          "gateway-test",
+          "gateway-typecheck",
+          "gateway-dry-run",
         ],
       },
     },

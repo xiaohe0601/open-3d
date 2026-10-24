@@ -23,9 +23,12 @@ export function AIProviderSponsors() {
   if (!sponsors.length) return null;
 
   return (
-    <section aria-label={t("sponsoredProviders")} className="grid gap-2 border-t border-border pt-3">
-      <h3 className="m-0 text-[13px] font-medium text-muted">{t("sponsoredProviders")}</h3>
-      <div className="grid gap-1">
+    <section
+      aria-label={t("sponsoredProviders")}
+      className="ai-provider-sponsors flex min-h-0 min-w-0 shrink-0 flex-col gap-2 border-t border-border pt-4 lg:max-h-full lg:w-80 lg:gap-3 lg:self-start lg:rounded-xl lg:border lg:bg-sheet lg:p-4 lg:shadow-sm"
+    >
+      <h3 className="m-0 shrink-0 text-xs font-medium text-muted">{t("sponsoredProviders")}</h3>
+      <div className="grid min-h-0 min-w-0 content-start gap-2 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-contain">
         {sponsors.map((sponsor) => (
           <a
             key={sponsor.id}
@@ -33,12 +36,18 @@ export function AIProviderSponsors() {
             target="_blank"
             rel="sponsored noopener noreferrer"
             referrerPolicy="no-referrer"
-            className="flex min-w-0 items-center gap-3 rounded-md p-2 text-foreground no-underline outline-none hover:bg-soft focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex min-w-0 items-start gap-2.5 rounded-md py-2 px-1 text-foreground no-underline outline-none hover:bg-soft focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
           >
             <SponsorIcon key={sponsor.icon} sponsor={sponsor} />
             <span className="grid min-w-0 flex-1 gap-0.5 [overflow-wrap:anywhere]">
-              <span className="text-[13px] font-medium">{sponsor.name}</span>
-              {sponsor.description && <span className="text-xs leading-5 text-muted">{sponsor.description}</span>}
+              <span className="truncate text-[13px] font-medium" title={sponsor.name}>
+                {sponsor.name}
+              </span>
+              {sponsor.description && (
+                <span className="line-clamp-2 text-xs leading-5 text-muted lg:line-clamp-4" title={sponsor.description}>
+                  {sponsor.description}
+                </span>
+              )}
             </span>
             <ExternalLink className="size-3.5 shrink-0 text-muted" aria-hidden="true" />
             <span className="sr-only">{t("opensInNewTab")}</span>
@@ -59,11 +68,11 @@ function SponsorIcon({ sponsor }: { sponsor: AIProviderSponsor }) {
       height={32}
       loading="lazy"
       referrerPolicy="no-referrer"
-      className="size-8 shrink-0 rounded-md object-contain"
+      className="size-5 shrink-0 rounded object-contain lg:size-8"
       onError={() => setFailed(true)}
     />
   ) : (
-    <span aria-hidden="true" className="flex size-8 shrink-0 items-center justify-center text-sm font-medium">
+    <span aria-hidden="true" className="flex size-5 shrink-0 items-center lg:size-8 justify-center text-sm font-medium">
       {Array.from(sponsor.name)[0]}
     </span>
   );

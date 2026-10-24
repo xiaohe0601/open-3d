@@ -55,7 +55,7 @@ export function LocalProjectRow({
           >
             <Ellipsis className="size-4" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent>
+          <DropdownMenuContent align="end" className="min-w-0 w-max max-w-[calc(100vw-24px)]">
             <DropdownMenuItem onClick={onRename}>
               <Pencil />
               {t("rename")}

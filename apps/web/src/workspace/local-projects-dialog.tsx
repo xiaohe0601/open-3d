@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { X } from "lucide-react";
+import { FilePlus2, X } from "lucide-react";
 import type { LocalProjectSummary } from "@open-3d/projects";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { LocalProjectRow } from "./local-project-row";
 import { LocalProjectAction, type ProjectAction } from "./local-project-action";
+import type { ProjectDeletion } from "../modra/storage/project-deletion";
 
 interface LocalProjectsDialogProps {
   open: boolean;
@@ -17,9 +18,13 @@ interface LocalProjectsDialogProps {
   error: string | null;
   onOpenChange: (open: boolean) => void;
   onOpenProject: (project: LocalProjectSummary) => void;
+  onNewProject: () => void;
   onRenameProject: (project: LocalProjectSummary, name: string) => Promise<boolean>;
   onDuplicateProject: (project: LocalProjectSummary) => void;
   onDeleteProject: (project: LocalProjectSummary) => Promise<boolean>;
+  deletions?: ProjectDeletion[];
+  onRetryDeletion?: (projectId: string) => void;
+  onCancelDeletion?: (projectId: string) => void;
 }
 
 export function LocalProjectsDialog({
@@ -31,9 +36,13 @@ export function LocalProjectsDialog({
   error,
   onOpenChange,
   onOpenProject,
+  onNewProject,
   onRenameProject,
   onDuplicateProject,
   onDeleteProject,
+  deletions = [],
+  onRetryDeletion,
+  onCancelDeletion,
 }: LocalProjectsDialogProps) {
   const { t, i18n } = useTranslation("projects");
   const [search, setSearch] = useState("");
@@ -77,6 +86,16 @@ export function LocalProjectsDialog({
             <DialogTitle>{t("localProjects")}</DialogTitle>
           </div>
           <div className="flex shrink-0 items-start gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              disabled={busy}
+              aria-label={t("newProject")}
+              title={t("newProject")}
+              onClick={onNewProject}
+            >
+              <FilePlus2 className="size-4" />
+            </Button>
             <DialogClose disabled={busy} render={<Button variant="ghost" size="icon" aria-label={t("close")} />}>
               <X className="size-4" />
             </DialogClose>
@@ -100,6 +119,42 @@ export function LocalProjectsDialog({
               {error}
             </p>
           )}
+          {deletions.map((operation) => (
+            <section
+              key={operation.projectId}
+              className="grid min-w-0 gap-2 rounded-lg bg-soft p-3 text-sm"
+              aria-label={t("pendingDeletion")}
+              data-testid="pending-project-deletion"
+            >
+              <strong
+                className="truncate font-medium"
+                title={projects.find((project) => project.id === operation.projectId)?.name}
+              >
+                {projects.find((project) => project.id === operation.projectId)?.name ?? t("removedProject")}
+              </strong>
+              <p className="m-0 text-muted">
+                {t(operation.phase === "removed" ? "cleanupPending" : "deletionPending")}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  disabled={busy || loading}
+                  onClick={() => onRetryDeletion?.(operation.projectId)}
+                >
+                  {t("retryDeletion")}
+                </Button>
+                {["sealed", "remove-failed"].includes(operation.phase) && (
+                  <Button
+                    variant="ghost"
+                    disabled={busy || loading}
+                    onClick={() => onCancelDeletion?.(operation.projectId)}
+                  >
+                    {t("cancelDeletion")}
+                  </Button>
+                )}
+              </div>
+            </section>
+          ))}
           {loading && projects.length === 0 ? (
             <p className="m-0 text-sm text-muted" role="status">
               {t("loading")}
@@ -111,7 +166,7 @@ export function LocalProjectsDialog({
                   key={project.id}
                   project={project}
                   current={project.id === currentProjectId}
-                  disabled={busy || loading}
+                  disabled={busy || loading || deletions.some((operation) => operation.projectId === project.id)}
                   onOpen={() => onOpenProject(project)}
                   onRename={() => setAction({ type: "rename", project })}
                   onDuplicate={() => onDuplicateProject(project)}

@@ -1,0 +1,8 @@
+# Local placeholders only. Generate independent random values; never use provider API keys here.
+# SELF_HOSTED_AUTH defaults to token; explicitly set none in local config only if intended.
+DEPLOYMENT_TOKEN=replace-with-a-local-only-random-token
+IDENTITY_SECRET=replace-with-an-independent-local-random-secret
+# Official mode additionally requires:
+# GRANT_SECRET=replace-with-an-independent-signing-secret
+# TURNSTILE_SECRET=replace-with-your-turnstile-secret
+# TURNSTILE_HOSTNAME=your-web-app.example
