@@ -574,7 +574,7 @@ test.each([
       );
     const expected = semanticColor("scrim");
     await openAISettings();
-    const dialog = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI provider settings", exact: true });
+    const dialog = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI service settings", exact: true });
     await expect.element(dialog).toBeVisible();
     expect(backdrop()).toHaveLength(1);
     expect(getComputedStyle(backdrop()[0]!).backgroundColor).toBe(expected);
@@ -602,7 +602,7 @@ test.each([
     await click(dialog.getByRole("button", { name: zh ? "保存" : "Save", exact: true }));
     await expect.element(dialog.getByRole("button", { name: zh ? "保存" : "Save", exact: true })).toBeVisible();
     await click(
-      dialog.getByRole("button", { name: zh ? "关闭 AI 服务设置" : "Close AI provider settings", exact: true }),
+      dialog.getByRole("button", { name: zh ? "关闭 AI 服务设置" : "Close AI service settings", exact: true }),
     );
     await expect.poll(() => backdrop().length).toBe(0);
     await expect.element(page.getByRole("region", { name: zh ? "Modra" : "Modra", exact: true })).toBeVisible();
@@ -1964,9 +1964,12 @@ test("shows retryable Modra cleanup after the project row has already been remov
     const pending = manager.getByRole("region", { name: "Pending project deletion", exact: true });
     await expect
       .element(
-        pending.getByText("The project was removed. Its Modra data is sealed; retry to finish local cleanup.", {
-          exact: true,
-        }),
+        pending.getByText(
+          "The project was removed, but its Modra data is still locked. Try again to finish cleaning up local data.",
+          {
+            exact: true,
+          },
+        ),
       )
       .toBeVisible();
     await expect
@@ -2076,7 +2079,7 @@ test.each([
   {
     name: "failed-migration.open3d",
     content: JSON.stringify({ format: "open-3d-project", formatVersion: 0, legacyPayload: {} }),
-    expectedError: "missing its modelingDocument payload",
+    expectedError: "missing modelingDocument data",
   },
 ])("keeps the active scene when importing $name fails", async ({ name, content, expectedError }) => {
   await addPrimitive();
@@ -2097,7 +2100,7 @@ test.each([
       }),
     )
     .toBeInTheDocument();
-  await click(page.getByRole("button", { name: "Close file error" }));
+  await click(page.getByRole("button", { name: "Dismiss file error" }));
   await expect.element(page.getByRole("button", { name: "Box", exact: true })).toBeInTheDocument();
 });
 
@@ -2130,7 +2133,7 @@ test("preserves the active scene and offers native recovery when interchange exp
   await expect
     .element(dialog.getByRole("button", { name: "Export current project as open3d", exact: true }))
     .toBeInTheDocument();
-  await click(dialog.getByRole("button", { name: "Close file error" }));
+  await click(dialog.getByRole("button", { name: "Dismiss file error" }));
   await expect.element(page.getByRole("button", { name: "Box", exact: true })).toBeInTheDocument();
 });
 
@@ -2164,9 +2167,7 @@ test("imports supported glTF content and discloses omitted cameras", async () =>
   );
 
   await expect.element(page.getByRole("button", { name: "Pyramid base", exact: true })).toBeInTheDocument();
-  await expect
-    .element(page.getByRole("status"))
-    .toHaveTextContent("Interchange scene imported. Unsupported content omitted: 1 camera(s) were omitted.");
+  await expect.element(page.getByRole("status")).toHaveTextContent("Interchange scene imported. Omitted cameras: 1.");
 });
 
 test.each([
@@ -2229,10 +2230,10 @@ test("separates file operations from local project management and explains forma
     items[0].getBoundingClientRect().bottom,
   );
   await expect
-    .element(menu.getByText("Export open3d for a portable editable project", { exact: false }))
+    .element(menu.getByText("Export as open3d for a portable, editable project", { exact: false }))
     .toBeInTheDocument();
   await expect
-    .element(menu.getByText("does not preserve editor state or unsupported extensions", { exact: false }))
+    .element(menu.getByText("without editor state or unsupported extensions", { exact: false }))
     .toBeInTheDocument();
   await act(async () => userEvent.keyboard("{Escape}"));
 });
@@ -2323,9 +2324,9 @@ test.each([
   await click(page.getByRole("button", { name: zh ? "取消" : "Cancel", exact: true }));
   await click(page.getByRole("button", { name: zh ? "关闭项目" : "Close projects", exact: true }));
   await openAISettings();
-  const settings = await expectChrome(zh ? "AI 服务设置" : "AI provider settings");
+  const settings = await expectChrome(zh ? "AI 服务设置" : "AI service settings");
   await expect.element(settings.getByText(ai[language].credentialSummary, { exact: true })).toBeVisible();
-  await click(page.getByRole("button", { name: zh ? "关闭 AI 服务设置" : "Close AI provider settings", exact: true }));
+  await click(page.getByRole("button", { name: zh ? "关闭 AI 服务设置" : "Close AI service settings", exact: true }));
   await click(page.getByRole("button", { name: zh ? "关闭 Modra" : "Close Modra", exact: true }));
   await addPrimitive("cylinder");
   await act(async () =>
@@ -2366,7 +2367,7 @@ test.each([
       .element(page.getByRole("textbox", { name: zh ? "消息" : "Message", exact: true }))
       .toHaveAttribute("placeholder", zh ? "和 AI 一起建模" : "Model with AI");
     await openAISettings();
-    const dialog = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI provider settings", exact: true });
+    const dialog = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI service settings", exact: true });
     await expect.element(dialog.getByRole("textbox", { name: "URL", exact: true })).toBeVisible();
     expect(dialog.element().querySelector('label[for="ai-api-key"] svg')).toBeNull();
     await act(async () =>
@@ -2402,7 +2403,7 @@ test.each([
 
 test("validates provider settings by field and saves usable configuration locally", async () => {
   await openAISettings();
-  const dialog = page.getByRole("dialog", { name: "AI provider settings" });
+  const dialog = page.getByRole("dialog", { name: "AI service settings" });
   await click(dialog.getByRole("button", { name: "Save" }));
 
   await expect.element(page.getByText("Enter an endpoint URL", { exact: true })).toBeInTheDocument();
@@ -2442,7 +2443,7 @@ test.each(["en", "zh-CN"] as const)(
     };
     saveAIProviderSettings(original);
     await openAISettings();
-    const dialog = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI provider settings", exact: true });
+    const dialog = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI service settings", exact: true });
     const model = dialog.getByRole("textbox", { name: zh ? "模型" : "Model", exact: true });
     await act(async () => userEvent.fill(model, "new-model"));
     const write = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
@@ -2468,7 +2469,7 @@ test("directs unconfigured AI prompts to provider settings without sending a req
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Add a cube"));
   await click(page.getByRole("button", { name: "Send prompt" }));
 
-  await expect.element(page.getByRole("dialog", { name: "AI provider settings" })).toBeInTheDocument();
+  await expect.element(page.getByRole("dialog", { name: "AI service settings" })).toBeInTheDocument();
   expect(fetchMock).not.toHaveBeenCalled();
 });
 
@@ -2619,7 +2620,7 @@ test.each([
       userEvent.fill(page.getByRole("textbox", { name: zh ? "消息" : "Message", exact: true }), "Continue modeling"),
     );
     await expect
-      .element(page.getByRole("button", { name: zh ? "加入待发送" : "Queue prompt", exact: true }))
+      .element(page.getByRole("button", { name: zh ? "加入待发送" : "Add to queue", exact: true }))
       .toBeEnabled();
     const callsBeforeDecision = fetchMock.mock.calls.length;
     const keep = action === "keep";
@@ -3322,7 +3323,7 @@ test("keeps failed tool details visible with no loading indicator", async () => 
   expect(document.querySelectorAll(".ai-message .animate-spin")).toHaveLength(0);
   await click(page.getByText("command_scene_createPrimitive", { exact: true }));
   await expect
-    .element(page.getByText("The tool could not complete. Review the request error before continuing."))
+    .element(page.getByText("The tool call failed. Check the request error before continuing."))
     .toBeVisible();
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
@@ -3616,13 +3617,13 @@ test("removes the saved API key and sends the next request without credentials",
   );
 
   await openAISettings();
-  const dialog = page.getByRole("dialog", { name: "AI provider settings" });
+  const dialog = page.getByRole("dialog", { name: "AI service settings" });
   await click(dialog.getByRole("button", { name: "Remove saved API key" }));
   expect(dialog.element().querySelector('[role="status"]')).toBeNull();
   await expect.element(dialog.getByRole("button", { name: "Remove saved API key" })).not.toBeInTheDocument();
   expect(loadAIProviderSettings()?.apiKey).toBeUndefined();
 
-  await click(dialog.getByRole("button", { name: "Close AI provider settings" }));
+  await click(dialog.getByRole("button", { name: "Close AI service settings" }));
   await act(async () => userEvent.fill(page.getByRole("textbox", { name: "Message" }), "Check credentials"));
   await click(page.getByRole("button", { name: "Send prompt" }));
   await expect.element(page.getByText("No key sent", { exact: true })).toBeInTheDocument();
@@ -3967,13 +3968,13 @@ test.each(["light", "dark"] as const)(
     expect(
       getComputedStyle(
         page
-          .getByRole("dialog", { name: "AI provider settings", exact: true })
+          .getByRole("dialog", { name: "AI service settings", exact: true })
           .element()
           .querySelector(".ai-settings-dialog")!,
       ).backgroundColor,
     ).toBe(toRgb(rootStyle.getPropertyValue("--sheet")));
     await expect.element(page.getByRole("textbox", { name: "URL" })).toBeVisible();
-    await click(page.getByRole("button", { name: "Close AI provider settings" }));
+    await click(page.getByRole("button", { name: "Close AI service settings" }));
     await click(page.getByRole("button", { name: "Close Modra", exact: true }));
     expect(document.querySelector("#viewport-navigation-help")).toBeNull();
   },
@@ -3983,7 +3984,7 @@ test("preserves canvas geometry, draft and property editing while the AI floatin
   const canvas = document.querySelector("canvas")!;
   const before = canvas.getBoundingClientRect().toJSON();
   expect(document.querySelector('[data-testid="topbar"]')!.textContent).not.toContain("AI");
-  await expect.element(page.getByRole("button", { name: "Open AI provider settings" })).not.toBeInTheDocument();
+  await expect.element(page.getByRole("button", { name: "Open AI service settings" })).not.toBeInTheDocument();
   const toggle = page.getByRole("button", { name: "Modra", exact: true });
   await click(toggle);
   const dialog = page.getByRole("dialog", { name: "Modra", exact: true });
@@ -4731,7 +4732,7 @@ test.each([
     });
     const zh = language === "zh-CN";
     await openAISettings();
-    const settings = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI provider settings", exact: true });
+    const settings = page.getByRole("dialog", { name: zh ? "AI 服务设置" : "AI service settings", exact: true });
     await click(settings.getByRole("combobox", { name: zh ? "协议" : "Protocol", exact: true }));
     await click(page.getByRole("option", { name: label, exact: true }));
     await act(async () => {

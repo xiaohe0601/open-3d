@@ -235,14 +235,14 @@ test("preloads promotions at workspace startup and reuses them when settings ope
   await act(async () => root.render(<WorkspaceApp />));
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(fetchMock.mock.calls[0][0]).toBe(AI_PROVIDER_SPONSORS_URL);
-  await expect.element(page.getByRole("dialog", { name: "AI provider settings" })).not.toBeInTheDocument();
+  await expect.element(page.getByRole("dialog", { name: "AI service settings" })).not.toBeInTheDocument();
   await expect.element(page.getByRole("application", { name: "Interactive 3D scene" })).toBeInTheDocument();
   await act(async () => {
     resolve(new Response(JSON.stringify(feed)));
   });
   await act(async () => userEvent.click(page.getByRole("button", { name: "Modra", exact: true })));
-  await expect.element(page.getByRole("button", { name: "Open AI provider settings", exact: true })).toBeVisible();
-  await act(async () => userEvent.click(page.getByRole("button", { name: "Open AI provider settings", exact: true })));
+  await expect.element(page.getByRole("button", { name: "Open AI service settings", exact: true })).toBeVisible();
+  await act(async () => userEvent.click(page.getByRole("button", { name: "Open AI service settings", exact: true })));
   await expect.element(page.getByRole("region", { name: "Sponsored providers", exact: true })).toBeVisible();
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });

@@ -83,5 +83,5 @@ export async function openAISettings() {
   if (!document.querySelector('[data-testid="ai-floating-dialog"]')?.checkVisibility()) {
     await click(page.getByRole("button", { name: /^(AI chat|Modra)$/ }));
   }
-  await click(page.getByRole("button", { name: /^(Open AI provider settings|打开 AI 服务设置)$/ }));
+  await click(page.getByRole("button", { name: /^(Open AI service settings|打开 AI 服务设置)$/ }));
 }

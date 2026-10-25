@@ -54,7 +54,7 @@ test("retains parameter controls for the deferred mesh-operation catalog", async
     ["Dissolve faces", "Apply operation"],
     ["Bevel edges", "Width"],
     ["Loop cut", "Seed edge"],
-    ["Recalculate normals", "Reorients the selected connected mesh component"],
+    ["Recalculate normals", "Reorients the normals of the selected connected mesh component"],
     ["Flip normals", "Reverses the winding of selected faces"],
   ];
   for (const [label, expected] of controls) {

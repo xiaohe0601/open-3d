@@ -934,7 +934,7 @@ test("queued references are revalidated after manual deletion before any new req
   await click(page.getByRole("button", { name: ai.en.resumeQueue, exact: true }));
   await expect.element(page.getByText(ai.en.contextReferenceError, { exact: true })).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledTimes(1);
-  await click(page.getByRole("button", { name: "Remove queued prompt: Inspect queued box", exact: true }));
+  await click(page.getByRole("button", { name: "Remove queued message: Inspect queued box", exact: true }));
   await expect.poll(() => document.querySelectorAll("[data-queued-task]").length).toBe(0);
 });
 test.each(["en", "zh-CN"] as const)(

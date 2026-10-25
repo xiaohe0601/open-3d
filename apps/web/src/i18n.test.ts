@@ -116,7 +116,7 @@ describe("localized catalog and project feedback", () => {
       describeProjectFailure({ kind: "import", cause: new NativeProjectError("malformed-json", "raw error") }),
     ).not.toContain("raw error");
     expect(describeOmittedContent(["1 camera(s) were omitted."])).toBe(
-      language === "en" ? "1 camera(s) were omitted" : "已忽略 1 项相机",
+      language === "en" ? "Omitted cameras: 1" : "已忽略 1 项相机",
     );
   });
 });
