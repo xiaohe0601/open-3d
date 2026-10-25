@@ -17,8 +17,13 @@ test("exchanges only a challenge token for a bounded transient grant", async () 
 
 test.each([
   { version: 2, token: "test-grant", expiresAt: 301000 },
-  { version: 1, token: "test-grant", expiresAt: 6000 },
-  { version: 1, token: "test-grant", expiresAt: 301001 },
+  { version: 1, token: "test-grant", issuedAt: 1000, expiresAt: 6000 },
+  { version: 1, token: "test-grant", issuedAt: 1000, expiresAt: 301001 },
+  { version: 1, token: "test-grant", issuedAt: "1000", expiresAt: 301000 },
+  { version: 1, token: "test-grant", issuedAt: null, expiresAt: 301000 },
+  { version: 1, token: "test-grant", issuedAt: 301000, expiresAt: 1000 },
+  { version: 1, token: "test-grant", expiresAt: 0 },
+  { version: 1, token: "test-grant", expiresAt: 1.5 },
   { version: 1, token: "", expiresAt: 301000 },
   null,
 ])("rejects incompatible grants: %j", async (value) => {
@@ -28,6 +33,47 @@ test.each([
     fetch: async () => Response.json(value),
   });
   await expect(acquire("https://gateway.example.org")).rejects.toMatchObject({ code: "incompatible" });
+});
+
+test.each([-3_600_000, -1, 0, 1, 3_600_000])(
+  "uses a bounded local lifetime with browser clock offset %s for new and legacy gateways",
+  async (offset) => {
+    const serverNow = 10_000_000;
+    for (const issuedAt of [serverNow, undefined]) {
+      let localNow = serverNow + offset;
+      const acquire = createOfficialGatewayAccess({
+        challenge: async () => {
+          // Time spent solving the challenge must not consume the grant's lifetime.
+          localNow += 60_000;
+          return "test-challenge";
+        },
+        now: () => localNow,
+        fetch: async () => {
+          localNow += 2_000;
+          return Response.json({ version: 1, token: "test-grant", issuedAt, expiresAt: serverNow + 300_000 });
+        },
+      });
+      const grant = await acquire("https://gateway.example.org");
+      expect(grant).toEqual({ token: "test-grant", expiresAt: serverNow + offset + 60_000 + 300_000 });
+      expect(grant.expiresAt - localNow).toBe(298_000);
+    }
+  },
+);
+
+test("honors a shorter server lifetime and rejects an exchange that exhausts it", async () => {
+  let localNow = 1000;
+  let delay = 2000;
+  const acquire = createOfficialGatewayAccess({
+    challenge: async () => "test-challenge",
+    now: () => localNow,
+    fetch: async () => {
+      localNow += delay;
+      return Response.json({ version: 1, token: "test-grant", issuedAt: 10_000_000, expiresAt: 10_060_000 });
+    },
+  });
+  expect(await acquire("https://gateway.example.org")).toEqual({ token: "test-grant", expiresAt: 61_000 });
+  delay = 60_000;
+  await expect(acquire("https://gateway.example.org")).rejects.toMatchObject({ code: "auth" });
 });
 
 test("cancellation before/after the challenge never exchanges its result", async () => {

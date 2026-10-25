@@ -277,6 +277,50 @@ test("fake verifier rejects false or unrelated challenge results without issuing
   }
 });
 
+test.each([200, 400])(
+  "reports a misconfigured Turnstile secret separately from verifier outages (%i)",
+  async (status) => {
+    const response = await createGateway(async (_url, init) => {
+      expect(init.redirect).toBe("manual");
+      expect(init.headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
+      return Response.json({ success: false, "error-codes": ["invalid-input-secret"] }, { status });
+    }).fetch(request({ path: "/v1/access", body: '{"token":"test"}' }), env({ MODE: "official" }));
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe('{"error":{"code":"gateway.configuration"}}');
+  },
+);
+
+test("rejects Turnstile redirects without forwarding credentials", async () => {
+  const cancel = vi.fn();
+  const dispatch = vi.fn(async (_url, init) => {
+    expect(init.redirect).toBe("manual");
+    return new Response(new ReadableStream({ cancel }), {
+      status: 302,
+      headers: { Location: "https://untrusted.example/verify" },
+    });
+  });
+  const response = await createGateway(dispatch).fetch(
+    request({ path: "/v1/access", body: '{"token":"test"}' }),
+    env({ MODE: "official" }),
+  );
+  expect(response.status).toBe(503);
+  expect(await response.json()).toEqual({ error: { code: "gateway.challenge-unavailable" } });
+  expect(dispatch).toHaveBeenCalledTimes(1);
+  expect(cancel).toHaveBeenCalledTimes(1);
+});
+
+test.each(["unavailable", "malformed", "oversized", "null"])(
+  "fails closed for %s verification responses",
+  async (mode) => {
+    const response = await createGateway(async () => {
+      if (mode === "unavailable") return Response.json({ success: false }, { status: 503 });
+      return new Response(mode === "oversized" ? " ".repeat(8193) : mode === "null" ? "null" : "<html>error</html>");
+    }).fetch(request({ path: "/v1/access", body: '{"token":"test"}' }), env({ MODE: "official" }));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: { code: "gateway.challenge-unavailable" } });
+  },
+);
+
 test.each([false, true])(
   "official grants remain valid across UTC midnight (verification crosses midnight: %s)",
   async (crossDuringVerification) => {
@@ -293,6 +337,7 @@ test.each([false, true])(
       const response = await app.fetch(request({ path: "/v1/access", body: '{"token":"test"}' }), official);
       expect(response.status).toBe(200);
       const grant = await response.json();
+      expect(grant.issuedAt).toBe(Date.now());
       expect(grant.expiresAt).toBe(Date.now() + 300_000);
       vi.setSystemTime(midnight + 2_000);
       const authorized = request({ headers: { "X-Open-3D-Gateway-Token": grant.token } });

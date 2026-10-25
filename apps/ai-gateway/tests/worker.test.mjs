@@ -72,6 +72,43 @@ afterAll(async () => {
   if (directory) await rm(directory, { force: true, recursive: true });
 });
 
+test("workerd verifies official access through its native fetch implementation", async () => {
+  const calls = [];
+  const official = new Miniflare(
+    convertV4MiniflareOptions({
+      ...options(),
+      name: "modra-official-test",
+      bindings: bindings({ MODE: "official" }),
+      durableObjectsPersist: undefined,
+      outboundService: {
+        node: async (req, res) => {
+          calls.push({ url: req.url, headers: req.headers, body: await new Response(req).text() });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, hostname: "3d.xiaohe.ink", action: "modra-relay" }));
+        },
+      },
+    }),
+  );
+  try {
+    const req = request({ path: "/v1/access", body: '{"token":"workerd-challenge"}' });
+    const response = await official.dispatchFetch(req.url, {
+      method: "POST",
+      headers: [...req.headers],
+      body: await req.text(),
+    });
+    expect(response.status).toBe(200);
+    const grant = await response.json();
+    expect(grant.token).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(grant.expiresAt - grant.issuedAt).toBe(300_000);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].headers["content-type"]).toBe("application/x-www-form-urlencoded");
+    expect(new URLSearchParams(calls[0].body).get("response")).toBe("workerd-challenge");
+    expect(new URLSearchParams(calls[0].body).get("secret")).toBe(bindings().TURNSTILE_SECRET);
+  } finally {
+    await official.dispose();
+  }
+});
+
 test("workerd streams an initial SSE chunk before upstream completion and cancels cleanly", async () => {
   const response = await dispatch();
   expect(response.status).toBe(200);

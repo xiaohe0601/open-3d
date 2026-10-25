@@ -158,6 +158,44 @@ test.each(["direct", "official", "self-hosted"] as const)(
   },
 );
 
+test.each([
+  { offset: 60_000, legacy: true },
+  { offset: -3_600_000, legacy: true },
+  { offset: 3_600_000, legacy: false },
+  { offset: -3_600_000, legacy: false },
+])("official access tolerates server clock offset $offset (legacy: $legacy)", async ({ offset, legacy }) => {
+  let exchanges = 0;
+  let relays = 0;
+  mockModelFetch().mockImplementation(async (input, init) => {
+    const url = requestURL(input);
+    if (url.endsWith("capabilities")) return capabilities("official");
+    if (url.endsWith("access")) {
+      exchanges++;
+      const serverNow = Date.now() + offset;
+      return Response.json({
+        version: 1,
+        token: "test-grant",
+        ...(legacy ? {} : { issuedAt: serverNow }),
+        expiresAt: serverNow + 300_000,
+      });
+    }
+    expect(url).toBe("https://official.example.org/v1/relay");
+    expect(new Headers(init?.headers).get("X-Open-3D-Gateway-Token")).toBe("test-grant");
+    relays++;
+    return chatTextResponse("test", "Gateway request completed");
+  });
+  await mount("official");
+  await send();
+  await click(page.getByRole("button", { name: "Verify test access" }));
+  await expect.element(page.getByText("Gateway request completed", { exact: true })).toBeVisible();
+  await waitForModraIdle();
+  await send("Continue");
+  await waitForModraIdle();
+  expect(exchanges).toBe(1);
+  expect(relays).toBe(2);
+  expect(window.turnstile!.render).toHaveBeenCalledOnce();
+});
+
 test("official verification can be cancelled and retried without a request or stuck spinner", async () => {
   const dispatch = mockModelFetch().mockImplementation(async (input) => {
     if (requestURL(input).endsWith("capabilities")) return capabilities("official");

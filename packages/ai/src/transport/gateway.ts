@@ -27,6 +27,7 @@ interface Capabilities {
 
 export interface GatewayAccessGrant {
   token: string;
+  /** Browser-local cache deadline; server authorization remains authoritative. */
   expiresAt: number;
 }
 export interface ModraTransportOptions {

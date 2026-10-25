@@ -87,19 +87,31 @@ export async function issueAccess(
       throw new GatewayError("challenge", 400);
     }
     if (typeof token !== "string" || !token || token.length > 4096) throw new GatewayError("challenge", 400);
-    let result: { success?: boolean; hostname?: string; action?: string };
+    let result: { success?: boolean; hostname?: string; action?: string; "error-codes"?: unknown };
     try {
       abort.signal.throwIfAborted();
       const response = await dispatch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
         method: "POST",
-        redirect: "error",
+        redirect: "manual",
         signal: abort.signal,
+        headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ secret: env.TURNSTILE_SECRET!, response: token }),
       });
-      if (!response.ok || !response.body) throw new Error();
+      // Workers supports manual redirects; never forward the verification secret to another URL.
+      if (response.status >= 300 && response.status < 400) {
+        await response.body?.cancel();
+        throw new GatewayError("challenge-unavailable", 503);
+      }
+      if (!response.body) throw new Error();
       result = await new Response(boundedBody(response.body, 8192, abort.signal)).json();
-    } catch {
+      if (!result || typeof result !== "object") throw new Error();
+      const errors = Array.isArray(result["error-codes"]) ? result["error-codes"] : [];
+      if (errors.includes("invalid-input-secret") || errors.includes("missing-input-secret"))
+        throw new GatewayError("configuration", 503);
+      if (!response.ok && response.status !== 400) throw new GatewayError("challenge-unavailable", 503);
+    } catch (error) {
       abort.signal.throwIfAborted();
+      if (error instanceof GatewayError && error.code === "configuration") throw error;
       throw new GatewayError("challenge-unavailable", 503);
     }
     if (result.success !== true || result.hostname !== env.TURNSTILE_HOSTNAME || result.action !== "modra-relay")
@@ -118,7 +130,7 @@ export async function issueAccess(
     const signed = base64url(await signature(env.GRANT_SECRET!, encoded));
     abort.signal.throwIfAborted();
     return Response.json(
-      { version: 1, token: `${encoded}.${signed}`, expiresAt: payload.expires },
+      { version: 1, token: `${encoded}.${signed}`, issuedAt: payload.issued, expiresAt: payload.expires },
       { headers: { "Cache-Control": "no-store" } },
     );
   } finally {

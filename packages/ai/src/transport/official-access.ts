@@ -17,6 +17,8 @@ export function createOfficialGatewayAccess(options: {
     signal?.throwIfAborted();
     await assertWritable?.();
     if (!token || token.length > 4096) throw new GatewayTransportError("challenge");
+    const now = options.now ?? Date.now;
+    const startedAt = now();
     const response = await (options.fetch ?? globalThis.fetch)(`${gatewayURL}/v1/access`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -31,6 +33,7 @@ export function createOfficialGatewayAccess(options: {
     const value = (await readGatewayJSON(response)) as {
       version?: unknown;
       token?: unknown;
+      issuedAt?: unknown;
       expiresAt?: unknown;
       error?: { code?: unknown };
     } | null;
@@ -39,7 +42,6 @@ export function createOfficialGatewayAccess(options: {
       const code = value?.error?.code;
       throw new GatewayTransportError(code === "gateway.rate" ? "rate" : "challenge");
     }
-    const now = (options.now ?? Date.now)();
     if (
       value?.version !== 1 ||
       typeof value.token !== "string" ||
@@ -47,10 +49,22 @@ export function createOfficialGatewayAccess(options: {
       value.token.length > 4096 ||
       typeof value.expiresAt !== "number" ||
       !Number.isSafeInteger(value.expiresAt) ||
-      value.expiresAt <= now + 5000 ||
-      value.expiresAt > now + 300_000
+      value.expiresAt <= 0
     )
       throw new GatewayTransportError("incompatible");
-    return { token: value.token, expiresAt: value.expiresAt };
+    // Compare server timestamps to each other, never to the browser's wall clock.
+    // Older v1 gateways omit issuedAt; their grants have a fixed five-minute lifetime.
+    let lifetime = 300_000;
+    if (value.issuedAt !== undefined) {
+      if (typeof value.issuedAt !== "number" || !Number.isSafeInteger(value.issuedAt) || value.issuedAt <= 0)
+        throw new GatewayTransportError("incompatible");
+      lifetime = value.expiresAt - value.issuedAt;
+    }
+    if (!Number.isSafeInteger(lifetime) || lifetime <= 5_000 || lifetime > 300_000)
+      throw new GatewayTransportError("incompatible");
+    // Start the local lifetime before the exchange so network delay cannot extend it.
+    const expiresAt = startedAt + lifetime;
+    if (expiresAt <= now() + 5_000) throw new GatewayTransportError("auth");
+    return { token: value.token, expiresAt };
   };
 }
