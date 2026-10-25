@@ -115,7 +115,7 @@ test("safe defaults and infrastructure survive generation; redeployment keeps na
   const config = configuration(base, settings);
   expect(config.vars.RELAY_ENABLED).toBe("false");
   expect(config.vars.SELF_HOSTED_AUTH).toBe("none");
-  expect(config.observability.enabled).toBe(false);
+  expect(config.observability).toEqual(base.observability);
   expect(config.compatibility_flags).toContain("enable_request_signal");
   expect(config.vars.MAX_DEPLOYMENT_CONCURRENT).toBe("32");
   expect(config.vars.MAX_DAILY_REQUESTS).toBe("10000");
@@ -129,6 +129,13 @@ test("safe defaults and infrastructure survive generation; redeployment keeps na
     { pattern: "gateway.host.org", custom_domain: true },
   ]);
 });
+
+test.each([{ enabled: false }, { logs: { enabled: true, invocation_logs: true } }])(
+  "deployment generation preserves the configured observability policy: %j",
+  (observability) => {
+    expect(configuration({ ...base, observability }, settings).observability).toEqual(observability);
+  },
+);
 
 test.each([undefined, "manual-token-".repeat(4), secret()])(
   "self-hosted deployment provisions optional token securely: %s",

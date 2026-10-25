@@ -22,6 +22,17 @@ const frames = async () =>
 const viewport = () => container.querySelector<HTMLDivElement>(".ai-transcript")!;
 const distance = () => transcriptBottomDistance(viewport());
 
+async function nativeScroll(action: () => Promise<unknown>) {
+  const node = viewport();
+  // CDP/key dispatch can finish while Chromium is still scrolling on the compositor.
+  const finished = new Promise<void>((resolve) => node.addEventListener("scrollend", () => resolve(), { once: true }));
+  await act(async () => {
+    await action();
+    await finished;
+  });
+  await frames();
+}
+
 async function render() {
   await act(async () =>
     root.render(
@@ -56,6 +67,7 @@ async function grow(count = 100) {
 
 beforeEach(async () => {
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  await page.viewport(390, 900);
   await initializeI18n("en");
   container = document.createElement("div");
   container.style.width = "390px";
@@ -65,6 +77,7 @@ beforeEach(async () => {
   busy = true;
   messages = [{ id: "reply", role: "assistant", text: lines(100) }];
   await render();
+  await document.fonts.ready;
   await expect.poll(distance).toBe(0);
 });
 
@@ -121,7 +134,7 @@ test("follows large deltas at exactly 80px but preserves a reader beyond the thr
 
 test("upward keyboard and native wheel scrolling suspend following", async () => {
   viewport().focus();
-  await act(async () => userEvent.keyboard("{Home}"));
+  await nativeScroll(() => userEvent.keyboard("{Home}"));
   await expect.poll(() => viewport().scrollTop).toBe(0);
   await grow();
   expect(viewport().scrollTop).toBe(0);
@@ -135,7 +148,7 @@ test("upward keyboard and native wheel scrolling suspend following", async () =>
     returnByValue: true,
   });
   const offset = JSON.parse(result.value as string) as { x: number; y: number };
-  await act(async () =>
+  await nativeScroll(() =>
     session.send("Input.dispatchMouseEvent", {
       type: "mouseWheel",
       x: rect.x + offset.x + 20,
@@ -277,16 +290,16 @@ test("native touch scrolling suspends following and reduced motion keeps the ret
   await session.send("Emulation.setTouchEmulationEnabled", { enabled: true });
   await session.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
   try {
-    await act(async () =>
-      session.send("Input.synthesizeScrollGesture", {
-        x: rect.x + offset.x + 30,
-        y: rect.y + offset.y + 30,
-        yDistance: 200,
-        xDistance: 0,
-        speed: 600,
-        gestureSourceType: "touch",
-      }),
-    );
+    const touch = (y: number) => [{ x: rect.x + offset.x + rect.width / 2, y: rect.y + offset.y + y, id: 1 }];
+    await nativeScroll(async () => {
+      await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: touch(40) });
+      // Deliver real touch moves over frames, rather than a platform-dependent synthesized scroll gesture.
+      for (let step = 1; step <= 8; step++) {
+        await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: touch(40 + step * 25) });
+        await frames();
+      }
+      await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    });
     await expect.poll(distance).toBeGreaterThan(80);
     const top = viewport().scrollTop;
     await grow();
@@ -322,8 +335,8 @@ test("centers a compact return button and swaps streaming spinner for a hover ar
   expect(getComputedStyle(spinner).display).not.toBe("none");
   expect(getComputedStyle(arrow).display).toBe("none");
   await userEvent.hover(button);
-  expect(getComputedStyle(spinner).display).toBe("none");
-  expect(getComputedStyle(arrow).display).not.toBe("none");
+  await expect.poll(() => getComputedStyle(spinner).display).toBe("none");
+  await expect.poll(() => getComputedStyle(arrow).display).not.toBe("none");
   busy = false;
   await render();
   expect(button.element().querySelector("[data-return-loading]")).toBeNull();
