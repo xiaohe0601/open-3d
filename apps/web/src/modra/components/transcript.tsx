@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowDown, Bot, LoaderCircle } from "lucide-react";
 import { useTranscriptScroll } from "./use-transcript-scroll";
@@ -32,6 +33,9 @@ export function ModraTranscript({
   const { t, i18n } = useTranslation("ai");
   const scroll = useTranscriptScroll(active, messages);
   const responding = isBusy && activeAssistantMessageId !== undefined;
+  const [returnHovered, setReturnHovered] = useState(false);
+  const [returnFocused, setReturnFocused] = useState(false);
+  const showReturnArrow = !responding || returnHovered || returnFocused;
   return (
     <div className="relative flex min-h-20 min-w-0 flex-1 flex-col">
       <div
@@ -144,17 +148,19 @@ export function ModraTranscript({
             aria-label={t("returnToBottom")}
             title={t("returnToBottom")}
             onPointerDown={(event) => event.preventDefault()}
+            onPointerEnter={() => setReturnHovered(true)}
+            onPointerLeave={() => setReturnHovered(false)}
+            onFocus={() => setReturnFocused(true)}
+            onBlur={() => setReturnFocused(false)}
             onClick={(event) => scroll.returnToBottom(document.activeElement === event.currentTarget)}
           >
             {responding && (
               <LoaderCircle
                 data-return-loading
-                className="size-3.5 animate-spin group-hover:hidden group-focus-visible:hidden motion-reduce:animate-none"
+                className={`size-3.5 animate-spin motion-reduce:animate-none ${showReturnArrow ? "hidden" : ""}`}
               />
             )}
-            <ArrowDown
-              className={`size-3.5 ${responding ? "hidden group-hover:block group-focus-visible:block" : ""}`}
-            />
+            <ArrowDown className={`size-3.5 ${showReturnArrow ? "" : "hidden"}`} />
           </Button>
         </div>
       )}

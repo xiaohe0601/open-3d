@@ -405,7 +405,7 @@ export function AIConversationPanel({
         needsStop={isBusy || run?.phase === "awaiting-review" || durability === "memory"}
       />
       <Button
-        className="ai-conversation-provider h-9 max-w-[36%] min-w-0 shrink gap-1 px-1.5 text-muted"
+        className="ai-conversation-provider h-9 min-w-[10rem] max-w-[44%] shrink gap-1 px-1.5 text-muted"
         variant="ghost"
         aria-label={t("openSettings")}
         title={
