@@ -9,6 +9,8 @@ English | [简体中文](README.zh-CN.md) | [Online Workspace](https://3d.xiaohe
 
 Open 3D brings professional 3D modeling workflows and natural language interaction together in a unified browser-based workspace for a seamless, efficient creative experience.
 
+![](./docs/assets/demo.png)
+
 ## Features
 
 - **Professional workflows:** production-grade 3D content creation spanning geometry modeling, digital sculpting, materials and shading, animation, and rendering.
